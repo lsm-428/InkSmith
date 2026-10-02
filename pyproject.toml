@@ -1,0 +1,22 @@
+[project]
+name = "neural-halftone"
+version = "0.1.0"
+description = "神经半色调：NN 直接输出喷墨可打印的二值点阵图"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "torch==2.7.1",
+    "torchvision==0.22.1",
+    "numpy>=2.3.0",
+    "pillow>=11.0.0",
+    "matplotlib>=3.10.0",
+    "tqdm>=4.67.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
+
+[tool.uv.sources]
+torch = [{index = "pytorch"}]
+torchvision = [{index = "pytorch"}]
