@@ -28,6 +28,28 @@ def floyd_steinberg(img_pil, size):
     return torch.from_numpy(1.0 - arr)[None, None]  # 转成 1=墨
 
 
+def gs_halftone(img_pil, size, workdir):
+    """Ghostscript 工业 RIP 基线：走它自家 halftone 筛网渲成 1-bit。
+
+    gs 不吃 PNG：PIL 包 PDF（resolution=72 使 1px=1pt），再用 pbmraw
+    1-bit 设备在 72dpi 下渲染，输出与原图像素一一对应。
+    """
+    from pathlib import Path
+    tmp_pdf = Path(workdir) / "_gs_in.pdf"
+    tmp_pbm = Path(workdir) / "_gs_out.pbm"
+    img_pil.resize(size).save(tmp_pdf, "PDF", resolution=72)
+    subprocess.run(["gs", "-dBATCH", "-dNOPAUSE", "-q",
+                    "-sDEVICE=pbmraw", "-r72", "-o", str(tmp_pbm), str(tmp_pdf)],
+                   check=True, capture_output=True)
+    bw = Image.open(tmp_pbm)
+    if bw.size != size:  # gs 页面舍入可能导致 1px 偏差，对齐
+        bw = bw.resize(size, Image.NEAREST)
+    arr = np.asarray(bw.convert("L"), dtype=np.float32) / 255.0  # 1=白
+    tmp_pdf.unlink()
+    tmp_pbm.unlink()
+    return torch.from_numpy(1.0 - arr)[None, None]  # 转成 1=墨
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("input")
@@ -56,16 +78,20 @@ def main():
     with torch.no_grad():
         ink_nn = (model(target) > 0).float()
         printed_nn = printer(ink_nn)
-    ink_fs = floyd_steinberg(img, (target.shape[3], target.shape[2])).to(device)
+    size = (target.shape[3], target.shape[2])
+    ink_fs = floyd_steinberg(img, size).to(device)
     printed_fs = printer(ink_fs)
+    ink_gs = gs_halftone(img, size, Path(args.out).parent).to(device)
+    printed_gs = printer(ink_gs)
 
-    p_nn, p_fs = psnr(printed_nn, target), psnr(printed_fs, target)
-    print(f"模拟打印 PSNR：模型 {p_nn:.2f} dB | Floyd-Steinberg {p_fs:.2f} dB "
-          f"| 差 {p_nn - p_fs:+.2f} dB")
+    p_nn, p_fs, p_gs = (psnr(printed_nn, target), psnr(printed_fs, target),
+                        psnr(printed_gs, target))
+    print(f"模拟打印 PSNR：模型 {p_nn:.2f} | FS {p_fs:.2f} | GS筛网 {p_gs:.2f} dB "
+          f"| 模型 vs FS {p_nn - p_fs:+.2f} | 模型 vs GS {p_nn - p_gs:+.2f}")
 
     # 落盘位图（墨=黑）并用 ghostscript inkcov 独立审计墨覆盖率
     cov = {}
-    for name, ink in [("model", ink_nn), ("fs", ink_fs)]:
+    for name, ink in [("model", ink_nn), ("fs", ink_fs), ("gs", ink_gs)]:
         path = f"{args.out}_{name}_bitmap.png"
         pil = Image.fromarray(((1 - ink[0, 0].cpu().numpy()) * 255).astype(np.uint8),
                               mode="L")
@@ -76,9 +102,10 @@ def main():
         print(f"[inkcov] {name}: K 覆盖率 {cov[name]:.1%} "
               f"(张量自检 {ink.mean().item():.1%}){warn} -> {path}")
 
-    grid = torch.cat([target, ink_nn, printed_nn, ink_fs, printed_fs])
+    grid = torch.cat([target, ink_nn, printed_nn, ink_fs, printed_fs,
+                      ink_gs, printed_gs])
     save_image(grid, f"{args.out}.png", nrow=1)
-    print(f"对比图：{args.out}.png（原图|模型位图|模型打印|FS位图|FS打印）")
+    print(f"对比图：{args.out}.png（原图|模型位图|模型打印|FS位图|FS打印|GS位图|GS打印）")
 
 
 def gs_inkcov(bitmap_path):
