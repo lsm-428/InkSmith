@@ -45,7 +45,7 @@ def load_model_and_printer(ckpt_path, dpi=None, device=None):
     if dpi and a.get("printer") == "film":
         a = {**a, "dpi": dpi}
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNet(base=a["base"]).to(device)
+    model = UNet(base=a["base"], up=a.get("up", "nearest")).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     printer = build_printer(a).to(device)

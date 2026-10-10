@@ -24,10 +24,15 @@ class UNet(nn.Module):
     """输入 1 通道灰度（1=白），输出 1 通道 logits（>0 表示该像素落墨）。
 
     要求输入边长能被 8 整除（3 次 2 倍下采样）。
+
+    up: 解码上采样方式。`nearest` 产生块状结构，是"水平条纹退化解"的温床
+    （见 PITFALLS #12）；`bilinear` 更平滑，倾向像素级纹理。
+    该值随 ckpt 存进 args，推理端自动重建——改它必须重训，旧权重不兼容。
     """
 
-    def __init__(self, base=32):
+    def __init__(self, base=32, up="nearest"):
         super().__init__()
+        self.up = up
         self.d1 = DoubleConv(1, base)
         self.d2 = DoubleConv(base, base * 2)
         self.d3 = DoubleConv(base * 2, base * 4)
@@ -37,14 +42,17 @@ class UNet(nn.Module):
         self.u1 = DoubleConv(base * 2, base)
         self.head = nn.Conv2d(base, 1, 1)
 
+    def _up(self, x):
+        return F.interpolate(x, scale_factor=2, mode=self.up)
+
     def forward(self, x):
         c1 = self.d1(x)
         c2 = self.d2(F.avg_pool2d(c1, 2))
         c3 = self.d3(F.avg_pool2d(c2, 2))
         b = self.b(F.avg_pool2d(c3, 2))
-        x = self.u3(torch.cat([F.interpolate(b, scale_factor=2, mode="nearest"), c3], 1))
-        x = self.u2(torch.cat([F.interpolate(x, scale_factor=2, mode="nearest"), c2], 1))
-        x = self.u1(torch.cat([F.interpolate(x, scale_factor=2, mode="nearest"), c1], 1))
+        x = self.u3(torch.cat([self._up(b), c3], 1))
+        x = self.u2(torch.cat([self._up(x), c2], 1))
+        x = self.u1(torch.cat([self._up(x), c1], 1))
         return self.head(x)
 
 

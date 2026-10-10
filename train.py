@@ -52,7 +52,7 @@ def evaluate(ckpt_path, device, n_val=30, size=256):
     """
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     a = ckpt["args"]
-    model = UNet(base=a["base"]).to(device)
+    model = UNet(base=a["base"], up=a.get("up", "nearest")).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
     printer = build_printer(a).to(device)
@@ -79,7 +79,7 @@ def evaluate(ckpt_path, device, n_val=30, size=256):
 def train_once(args, device, out, log, *, epochs, lr, w_iso, w_bin,
                t_start, t_end, hard_ste, resume=True):
     """跑一段训练并返回（模型留在显存上供下一段续训）。"""
-    model = UNet(base=args.base).to(device)
+    model = UNet(base=args.base, up=args.up).to(device)
     if resume and (out / "last.pt").exists():
         model.load_state_dict(torch.load(out / "last.pt", map_location=device,
                                          weights_only=False)["model"])
@@ -192,6 +192,8 @@ def main():
     p.add_argument("--length", type=int, default=2000, help="每 epoch 样本数")
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--base", type=int, default=32, help="U-Net 通道基数")
+    p.add_argument("--up", choices=["nearest", "bilinear"], default="nearest",
+                   help="U-Net 解码上采样；bilinear 抑制条纹退化解（见 PITFALLS #12）")
     p.add_argument("--printer", choices=["paper", "film"], default="paper",
                    help="paper=吸收基材(exp饱和)；film=非吸收膜基+100%固含(线性体积)")
     p.add_argument("--sigma", type=float, default=1.0, help="paper 模式：墨滴扩散 σ（像素）")
