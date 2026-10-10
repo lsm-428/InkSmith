@@ -74,13 +74,27 @@ uv run python infer.py 照片.jpg --ckpt runs/halftone/last.pt --out out/照片
 - `*_bitmap.png` — 0/1 二值图，**这就是发给打印机的位图**；
 - `*_preview.png` — 经扩散模型模拟的纸上效果，用于打印前自检。
 
-## 阶段 4（未做）：真实打印机标定
+## 阶段 4：真实打印机标定（部分完成）
 
-当前 `printer.py` 用固定高斯模拟墨滴，两个参数需要实测：
+**已完成**：物理参数已落实到代码。
 
-1. 打印标准测试图（已知点阵），扫描；
-2. 用扫描图拟合 `sigma`（墨点扩散半径）和 `gain`（网点扩大系数）；
-3. 替换参数重新训练，或把 `printer.py` 的高斯核换成实测点扩散函数。
+- 硬件：KM1024iSHE（6 pL，360 dpi/通道 ×4 行），非吸收膜基材，100% 固含墨水
+- 实测墨滴铺展直径 50 µm → 高斯等效 σ = 12.5 µm → `σ[px] = 12.5×dpi/25400`
+- 膜基物理 = 体积守恒线性叠加（无吸收饱和），对应 `printer.py` 的
+  `FilmSimulator`；纸基吸收型保留为 `PrinterSimulator`
+- 训练（连续 dpi）：`pipeline.py --printer film --sigma-um 12.5 \
+    --dpi-min 508 --dpi-max 5000 --dpi 1440 --out runs/film`
+  位图本身不含 dpi；训练时每 batch **对数均匀**随机抽 dpi 换算 σ[px]
+  （0.25~2.46px）算损失，一个模型覆盖 508~5000 dpi 任意分辨率。
+  不加 --dpi-min/max 则固定 --dpi 训练。
+- 推理：`infer.py 图.jpg --ckpt runs/film/best.pt --dpi 1440`
+  （--dpi 只影响预览渲染，位图与 dpi 无关）
+- 参数出处可溯：`uv run python calc_sigma.py`（读 printheads.json + 实测铺展）
+
+**语义注意**：film 模式下灰度值 ↔ 相对膜厚（1=满覆盖标称膜厚），
+评价指标是膜厚复刻精度；verify.py/eval_photos.py 会自动用反相图给 FS/GS 加网以对齐语义。
+
+**待做**：打印测试图 → 实测膜厚分布（轮廓仪）→ 拟合真实铺展核替换高斯。
 
 ## 阶段 5（未做）：全彩 CMYK
 
@@ -122,6 +136,7 @@ U-Net 与训练循环复用。
 
 ```
 gen_data.py          合成数据生成
+calc_sigma.py        喷头参数 + 实测铺展 -> σ 计算器（出处可溯）
 train.py             训练入口
 infer.py             推理入口（输出打印位图）
 halftone/model.py    U-Net + STE 二值化
