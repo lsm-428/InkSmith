@@ -59,14 +59,16 @@ train.py        训练：train_once(单段) + main(自动编排多轮/调参/硬
 eval.py         评测+诊断七合一（共用 triplet 跑三条路线）：
                 infer(位图) | one(单图三方) | batch(批量三方) |
                 wedge(灰度尺/条纹) | data(数据集) | norm(架构) | compare(双ckpt)
-webapp.py       网页版对照服务（复用 evalutil，与 eval 同一套 film 语义）
+webapp.py       网页版对照服务（import eval.triplet 复用评测核心）
 gen_data.py     合成训练图；calc_sigma.py σ 参数计算器
 halftone/model.py     U-Net + soft_binarize(退火) / hard_binarize(截断 STE)
 halftone/printer.py   PrinterSimulator(paper，exp 吸收=饱和区) / FilmSimulator(film，线性体积)
                       由 build_printer(ckpt["args"]) 按 "printer" 字段选
 halftone/losses.py    HVS 低频损失 + 孤立点惩罚；halftone/data.py 数据加载
-halftone/evalutil.py  公共评测：psnr / FS / GS 基线 / inkcov / ckpt 重建 / film 目标
 ```
+
+评测底层（psnr / FS / GS 基线 / inkcov / ckpt 重建 / film 目标反相）都在
+`eval.py` 顶层，`webapp.py` 直接 import 复用——不要再拆出新模块。
 
 - 权重是 `{"model", "args"}`，infer/eval/diag/webapp 从 ckpt 重建模型和打印机 →
   **改 argparse 默认值不影响已有 ckpt**，也别指望 ckpt 里的超参和代码默认值同步。

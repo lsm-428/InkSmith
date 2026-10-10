@@ -38,7 +38,6 @@ from torchvision.utils import save_image
 from tqdm import tqdm
 
 from halftone.data import GrayCrops
-from halftone.evalutil import psnr
 from halftone.losses import HVSLoss, isolated_dot_penalty, striping_penalty
 from halftone.model import UNet, hard_binarize, soft_binarize
 from halftone.printer import build_printer, gaussian_blur
@@ -156,7 +155,8 @@ def train_once(args, device, out, log, *, epochs, lr, w_iso, w_bin,
             totals["hvs"] += l_hvs.item() * b
             totals["iso"] += l_iso.item() * b
             totals["stripe"] += l_stripe.item() * b
-            totals["psnr"] += psnr(pb.detach(), tb) * b
+            totals["psnr"] += 10 * np.log10(
+                1.0 / (F.mse_loss(pb.detach(), tb).item() + 1e-12)) * b
             n += b
 
         log(f"[epoch {epoch}] {mode} " + " ".join(f"{k}={v/n:.4f}"

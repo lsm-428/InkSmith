@@ -20,9 +20,8 @@ import numpy as np
 import torch
 from PIL import Image
 
-from halftone.evalutil import (
-    floyd_steinberg, gs_halftone, load_model_and_printer, film_target_and_base, psnr,
-)
+from eval import (film_target_and_base, load_model_and_printer, psnr,
+                  triplet)  # 复用评测核心：webapp 与 CLI 共用同一套三条路线逻辑
 
 HTML = """
 <!doctype html><html lang="zh"><head><meta charset="utf-8"><title>神经半色调对照</title>
@@ -181,19 +180,8 @@ def png_dataurl(arr):
 
 
 def _triplet(img, dpi):
-    """跑三条路线 -> (ink_nn, printed_nn, ink_fs, printed_fs, ink_gs, printed_gs, target, a)"""
-    model, printer, a, device = get_model(CKPT, dpi)
-    film = a.get("printer", "paper") == "film"
-    target, base_img = film_target_and_base(img, film, device)
-    size = (target.shape[3], target.shape[2])
-    with torch.no_grad():
-        ink_nn = (model(target) > 0).float()
-        printed_nn = printer(ink_nn)
-        ink_fs = floyd_steinberg(base_img, size).to(device)
-        printed_fs = printer(ink_fs)
-        ink_gs = gs_halftone(base_img, size, Path("out/gs")).to(device)
-        printed_gs = printer(ink_gs)
-    return ink_nn, printed_nn, ink_fs, printed_fs, ink_gs, printed_gs, target, a
+    """跑三条路线（复用 eval.triplet），返回 (inks, prints, target, ckpt_args)。"""
+    return triplet(img, CKPT, dpi)
 
 
 def process_one(name, dataurl, dpi=None):
@@ -205,30 +193,29 @@ def process_one(name, dataurl, dpi=None):
         r = MAX_SIDE / max(img.size)
         img = img.resize((int(img.width * r), int(img.height * r)), Image.LANCZOS)
         scaled = True
-    ink_nn, printed_nn, ink_fs, printed_fs, ink_gs, printed_gs, target, a = \
-        _triplet(img, dpi)
+    inks, prints, target, a = _triplet(img, dpi)
     ink2img = lambda ink: np.uint8((1 - ink[0, 0].cpu().numpy()) * 255)  # 墨=黑
     clip = lambda x: x[0, 0].cpu().numpy().clip(0, 1)
-    p_nn, p_fs, p_gs = (psnr(printed_nn, target), psnr(printed_fs, target),
-                        psnr(printed_gs, target))
+    p_nn, p_fs, p_gs = (psnr(prints["nn"], target), psnr(prints["fs"], target),
+                        psnr(prints["gs"], target))
     return {
         "name": name, "size": [img.width, img.height], "scaled": scaled,
         "dpi": dpi or a.get("dpi"), "ms": round((time.time() - t0) * 1000),
         "printer": a.get("printer", "paper"),
-        "ink": {"nn": round(ink_nn.mean().item(), 4),
-                "fs": round(ink_fs.mean().item(), 4),
-                "gs": round(ink_gs.mean().item(), 4),
+        "ink": {"nn": round(inks["nn"].mean().item(), 4),
+                "fs": round(inks["fs"].mean().item(), 4),
+                "gs": round(inks["gs"].mean().item(), 4),
                 "target": round(target.mean().item(), 4)},
         "psnr": {"nn": round(p_nn, 2), "fs": round(p_fs, 2), "gs": round(p_gs, 2),
                  "vs_fs": round(p_nn - p_fs, 2), "vs_gs": round(p_nn - p_gs, 2)},
         "img": {
             "orig": png_dataurl(np.asarray(img, np.uint8)),
-            "nn_bitmap": png_dataurl(ink2img(ink_nn)),
-            "nn_preview": png_dataurl(clip(printed_nn)),
-            "fs_bitmap": png_dataurl(ink2img(ink_fs)),
-            "fs_preview": png_dataurl(clip(printed_fs)),
-            "gs_bitmap": png_dataurl(ink2img(ink_gs)),
-            "gs_preview": png_dataurl(clip(printed_gs)),
+            "nn_bitmap": png_dataurl(ink2img(inks["nn"])),
+            "nn_preview": png_dataurl(clip(prints["nn"])),
+            "fs_bitmap": png_dataurl(ink2img(inks["fs"])),
+            "fs_preview": png_dataurl(clip(prints["fs"])),
+            "gs_bitmap": png_dataurl(ink2img(inks["gs"])),
+            "gs_preview": png_dataurl(clip(prints["gs"])),
         },
     }
 
@@ -241,27 +228,24 @@ def wedge(n_levels=16, dpi=None):
     levels = np.arange(n_levels) / (n_levels - 1)
     arr = np.concatenate([np.full((seg, seg), l, np.float32) for l in levels], axis=1)
     img = Image.fromarray((arr * 255).astype("uint8"), "L")
-    ink_nn, printed_nn, ink_fs, printed_fs, ink_gs, printed_gs, target, a = \
-        _triplet(img, dpi)
-    H, W = printed_nn.shape[-2:]
+    inks, prints, target, a = _triplet(img, dpi)
     dev = lambda t, k: t[0, 0, :, k * seg:(k + 1) * seg].mean().item()
     rows = [{"level": round(float(l), 3),
-             "nn": round(dev(printed_nn, k), 3),
-             "fs": round(dev(printed_fs, k), 3),
-             "gs": round(dev(printed_gs, k), 3)}
+             "nn": round(dev(prints["nn"], k), 3),
+             "fs": round(dev(prints["fs"], k), 3),
+             "gs": round(dev(prints["gs"], k), 3)}
             for k, l in enumerate(levels)]
     for r in rows:
         for m in ("nn", "fs", "gs"):
             r[f"d_{m}"] = round(r[m] - r["level"], 3)
-    imgs = {}
-    for key, t in (("nn", printed_nn), ("fs", printed_fs), ("gs", printed_gs)):
-        imgs[key] = png_dataurl(t[0, 0].cpu().numpy().clip(0, 1))
+    imgs = {m: png_dataurl(t[0, 0].cpu().numpy().clip(0, 1))
+            for m, t in prints.items()}
     return {
         "rows": rows, "dpi": dpi or a.get("dpi"),
         "ms": round((time.time() - t0) * 1000),
-        "psnr": {"nn": round(psnr(printed_nn, target), 2),
-                 "fs": round(psnr(printed_fs, target), 2),
-                 "gs": round(psnr(printed_gs, target), 2)},
+        "psnr": {"nn": round(psnr(prints["nn"], target), 2),
+                 "fs": round(psnr(prints["fs"], target), 2),
+                 "gs": round(psnr(prints["gs"], target), 2)},
         "img": {"orig": png_dataurl(np.asarray(img, np.uint8)), **imgs},
     }
 
