@@ -12,7 +12,8 @@
 ```
 
 - `halftone/model.py` — U-Net + 直通估计器（STE）二值化
-- `halftone/printer.py` — 可微打印机模型（墨滴=高斯斑，σ 与 gain 对应你的打印机标定值）
+- `halftone/printer.py` — 可微打印机模型（墨滴=高斯斑）。两套物理：`PrinterSimulator`
+  （纸基吸收，exp 饱和）与 `FilmSimulator`（非吸收膜基 + 100% 固含，线性体积）
 - `halftone/losses.py` — HVS 低频匹配损失 + 孤立墨点/白洞惩罚
 
 ## 用法
@@ -20,16 +21,22 @@
 ```bash
 uv sync
 
-# 冒烟（合成数据，验证流程）
+# 冒烟（合成数据，验证流程，~10 秒）
 uv run python train.py --smoke
 
-# 正式训练：把照片放进 data/images/
-uv run python train.py --data data/images --epochs 20
+# 正式训练（默认自动编排：退火多轮 → 硬 STE 微调）
+uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/film
 
-# 推理
-uv run python infer.py photo.jpg --ckpt runs/halftone/last.pt --out out/photo
+# 推理：出打印位图 + 模拟预览
+uv run python eval.py infer photo.jpg --ckpt runs/film/last.pt --out out/photo
 # 产出 out/photo_bitmap.png（0/1 打印位图）与 out/photo_preview.png（模拟纸上效果）
+
+# 三方对照（模型 vs Floyd–Steinberg vs Ghostscript 筛网）
+uv run python eval.py one photo.jpg --ckpt runs/film/best.pt
 ```
+
+完整命令与架构见 [AGENTS.md](AGENTS.md)；分阶段操作手册见 [WORKFLOW.md](WORKFLOW.md)，
+历史教训见 [PITFALLS.md](PITFALLS.md)（改训练动力学前必读）。
 
 ## 关键超参
 

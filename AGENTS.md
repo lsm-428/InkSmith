@@ -7,7 +7,8 @@
 ## 文档优先级（会冲突，按此顺序信）
 
 **PITFALLS.md**（最新实证，改训练动力学前必读） > **WORKFLOW.md**（分阶段操作手册） >
-**CLAUDE.md / README.md**（入门，偏旧，未覆盖 film 模式）。文档冲突以 PITFALLS 为准：
+**README.md**（项目介绍）。`CLAUDE.md` 只是一个指向本文档的指针。
+文档冲突以 PITFALLS 为准：
 WORKFLOW 阶段 4 推荐 `--dpi-min/--dpi-max` 随机 dpi 训练，已被
 PITFALLS #11 推翻（线性物理下无收益，单 dpi 训练即可）——代码仍支持该选项，
 别因为"文档写了"就启用。

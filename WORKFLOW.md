@@ -25,10 +25,12 @@ uv sync        # 按 pyproject.toml 装 torch 2.7.1+cu118（EFD 项目同款配�
 
 ## 阶段 2：训练
 
-**自动模式（推荐）**：`uv run python pipeline.py --sigma 1.5 --gain 2.0`
+**自动模式（推荐，默认行为）**：
+`uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/film`
+
 两段式训练（这是踩坑后的正确姿势，详见 PITFALLS.md #1/#4）：
 
-1. **退火阶段**（每轮 20 epoch × N 轮）：`sigmoid(logits/T)` 软前向，
+1. **退火阶段**（默认每轮 10 epoch × 4 轮）：`sigmoid(logits/T)` 软前向，
    T 逐轮 1.0→0.3→0.09→0.03，`w_bin` 逐轮加强。软域学覆盖率。
 2. **硬 STE 微调**（默认 1 轮 20 epoch）：硬前向 + 截断 STE 反传，
    消灭软值作弊，训练指标从此 = 推理指标。**严禁从零直接硬 STE**。
@@ -39,35 +41,41 @@ psnr（**硬阈值**，唯一可信）、孤立点率、明暗偏差。
 产物：`best.pt`（最佳权重）、`train.log`（逐 epoch）、
 `pipeline_log.jsonl`（逐轮，中途被杀不丢）。
 
-手动模式：
+手动/微调单段（`--rounds 1`，一般不用）：
 
 ```bash
-uv run python train.py --data data/images --epochs 20 --length 2000
-# 从上次权重续训：加 --resume
-# 冒烟（合成小数据，1 分钟验证流程）：uv run python train.py --smoke
+uv run python train.py --rounds 1 --data data/images --epochs 20 --length 2000
+# 冒烟（~10 秒）：uv run python train.py --smoke
 ```
 
 - 每个 epoch 产出：`runs/halftone/epoch_NNN.png`（三行：目标 / 二值墨点 / 模拟打印）
-- 权重：`runs/halftone/last.pt`（含训练超参，infer 自动读取）
+- 权重：`runs/halftone/last.pt`（含训练超参，eval/infer 自动读取）
 - 参考速度：P2000 上约 70s/epoch（batch 16，256×256）
 
-**验收标准**（看 `epoch_*.png`）：
-1. 第三行（模拟打印）肉眼逼近第一行（目标）；
-2. 第二行（墨点）是细腻抖动纹理，不是大块团聚；
-3. `psnr` 逐 epoch 上升并趋于平稳（参考：20 epoch 后应 > 15 dB，越高越好）。
+**验收标准**（数值优先，肉眼只作辅助）：
+1. 硬阈值验证 psnr 达标（**唯一可信指标**，见下方"别用 train.log 的 psnr"）；
+2. 跑 `uv run python eval.py wedge --ckpt runs/film/best.pt`：分段覆盖偏差 |x|<0.05，
+   且**行墨量 std < 0.05**（>0.05 说明模型用水平条纹代替像素抖动，见 PITFALLS #12）；
+3. `epoch_*.png` 第二行（墨点）是细腻抖动纹理，不是大块团聚/条纹——这项只看图，
+   因为它对应上面那个数字判据。
+
+> **别用 `train.log` 里的 psnr 做验收**：那是软前向值，可以靠"半滴墨"作弊到
+> 30dB，硬阈值后只剩 13dB（PITFALLS #4）。每轮日志里的 `[验证] psnr=` 才是硬阈值。
 
 不达标时的调节方向：
 
 | 症状 | 调法 |
 |---|---|
-| 墨点团聚成块 | 调大 `--w-iso`（0.05 → 0.1~0.2） |
-| 中间调发脏/层次糊 | 检查 `--sigma` 是否匹配真实墨点，或调大 `--w-hvs` |
-| 整体偏黑/偏白 | 调 `--gain`（dot gain 标定值） |
+| 墨点团聚成块 / 孤立点多 | 调大 `--w-iso`（pipeline 会自动加倍，封顶 0.2） |
+| 灰度尺呈 S 形畸变 | 查 `eval.py wedge` 的行墨量 std，是条纹退化解（见 PITFALLS #12） |
+| 中间调发脏/层次糊 | 检查 `--sigma-um` 是否匹配真实墨点（film）或调大 `--w-hvs` |
+| 整体偏黑/偏白 | paper 调 `--gain`；film 看 `eval.py one` 的 inkcov 与目标覆盖率 |
+| 退火全程躺平不涨 | 打印模糊 σ 必须 ≳1.4px（film: `--sigma-um 25 --dpi 1440`），见 PITFALLS #11 |
 
 ## 阶段 3：推理出打印位图
 
 ```bash
-uv run python infer.py 照片.jpg --ckpt runs/halftone/last.pt --out out/照片
+uv run python eval.py infer 照片.jpg --ckpt runs/halftone/last.pt --out out/照片
 ```
 
 产出两个文件：
@@ -82,17 +90,19 @@ uv run python infer.py 照片.jpg --ckpt runs/halftone/last.pt --out out/照片
 - 实测墨滴铺展直径 50 µm → 高斯等效 σ = 12.5 µm → `σ[px] = 12.5×dpi/25400`
 - 膜基物理 = 体积守恒线性叠加（无吸收饱和），对应 `printer.py` 的
   `FilmSimulator`；纸基吸收型保留为 `PrinterSimulator`
-- 训练（连续 dpi）：`pipeline.py --printer film --sigma-um 12.5 \
-    --dpi-min 508 --dpi-max 5000 --dpi 1440 --out runs/film`
-  位图本身不含 dpi；训练时每 batch **对数均匀**随机抽 dpi 换算 σ[px]
-  （0.25~2.46px）算损失，一个模型覆盖 508~5000 dpi 任意分辨率。
-  不加 --dpi-min/max 则固定 --dpi 训练。
-- 推理：`infer.py 图.jpg --ckpt runs/film/best.pt --dpi 1440`
+- 训练（单 dpi，已验证配方）：`train.py --printer film --sigma-um 25 \
+    --dpi 1440 --out runs/film`
+  σ=25µm@1440dpi = 1.42px，是两段式配方能结晶的**下限**（σ<1.4px 会让退火全程
+  躺平，见 PITFALLS #11）。
+- ~~训练（连续 dpi）~~：`--dpi-min/--dpi-max` 随机 dpi 模式代码仍支持，但
+  **线性物理下已验证无收益**（只稀释纹理结晶信号，且网络无法感知当前 batch 的 σ）。
+  单 dpi 训练即可，靠图案 dpi 无关性泛化。详见 PITFALLS #11。
+- 推理：`eval.py infer 图.jpg --ckpt runs/film/best.pt --dpi 1440`
   （--dpi 只影响预览渲染，位图与 dpi 无关）
 - 参数出处可溯：`uv run python calc_sigma.py`（读 printheads.json + 实测铺展）
 
 **语义注意**：film 模式下灰度值 ↔ 相对膜厚（1=满覆盖标称膜厚），
-评价指标是膜厚复刻精度；verify.py/eval_photos.py 会自动用反相图给 FS/GS 加网以对齐语义。
+评价指标是膜厚复刻精度；`eval.py` 会自动用反相图给 FS/GS 加网以对齐语义。
 
 **待做**：打印测试图 → 实测膜厚分布（轮廓仪）→ 拟合真实铺展核替换高斯。
 
@@ -135,10 +145,11 @@ U-Net 与训练循环复用。
 ## 文件索引
 
 ```
+train.py             训练入口（默认自动编排；--rounds 1 为单段）
+eval.py              评测+诊断：infer 推理 / one / batch / wedge / data / norm / compare
+webapp.py            网页版对照（单图/多图上传）
 gen_data.py          合成数据生成
 calc_sigma.py        喷头参数 + 实测铺展 -> σ 计算器（出处可溯）
-train.py             训练入口
-infer.py             推理入口（输出打印位图）
 halftone/model.py    U-Net + STE 二值化
 halftone/printer.py  可微打印模拟器（阶段 4 要改的就是这里）
 halftone/losses.py   HVS 低频损失 + 孤立点惩罚
