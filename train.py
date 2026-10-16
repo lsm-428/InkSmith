@@ -25,6 +25,7 @@
 import argparse
 import json
 import math
+import random
 import shutil
 import subprocess
 import sys
@@ -45,10 +46,12 @@ from halftone.printer import build_printer, gaussian_blur
 
 # ---------------------------------------------------------------- 验证
 
-def evaluate(ckpt_path, device, n_val=30, size=256):
+def evaluate(ckpt_path, device, n_val=30, size=256, seed=1234):
     """验证集硬阈值指标：psnr（模拟打印 vs 目标）、孤立点率、明暗偏差。
 
     这是唯一可信的指标（train.log 里的 psnr 是软前向值，会骗人，PITFALLS #4）。
+    seed 固定验证集的随机裁剪/翻转：否则同 ckpt 两次评测能差 3dB 以上，
+    pipeline 里"psnr 是否上涨"的逐轮策略会被噪声牵着走（PITFALLS #12）。
     """
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     a = ckpt["args"]
@@ -59,6 +62,10 @@ def evaluate(ckpt_path, device, n_val=30, size=256):
     ds = GrayCrops("data/val", size=size, length=n_val)
     k = torch.ones(1, 1, 3, 3, device=device)
     psnrs, isos, biases = [], [], []
+    # 固定裁剪/翻转随机源；只影响验证，不碰训练用的全局 random 状态
+    rng = random.Random(seed)
+    state = random.getstate()
+    random.setstate((state[0], tuple(rng.getstate()[1]), state[2]))
     with torch.no_grad():
         for i in range(len(ds)):
             t = ds[i][None].to(device)
@@ -70,6 +77,7 @@ def evaluate(ckpt_path, device, n_val=30, size=256):
             isos.append((ink * (neighbors < 0.5)).sum().item()
                         / (ink.sum().item() + 1e-9))
             biases.append((printed.mean() - t.mean()).item())
+    random.setstate(state)
     return {"psnr": float(np.mean(psnrs)), "iso_ratio": float(np.mean(isos)),
             "bias": float(np.mean(biases))}
 

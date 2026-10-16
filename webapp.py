@@ -17,10 +17,9 @@ import time
 from pathlib import Path
 
 import numpy as np
-import torch
 from PIL import Image
 
-from eval import (film_target_and_base, load_model_and_printer, psnr,
+from eval import (load_model_and_printer, psnr,
                   triplet)  # 复用评测核心：webapp 与 CLI 共用同一套三条路线逻辑
 
 HTML = """

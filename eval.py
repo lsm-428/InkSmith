@@ -238,16 +238,24 @@ def cmd_wedge(args):
     print(f"{'灰阶':>6} {'目标':>6} | {'模型':>6} {'偏差':>7} | {'FS':>6} {'偏差':>7} "
           f"| {'GS':>6} {'偏差':>7}")
     worst = (0.0, 0.0)
+    _rows = []
     for k, v in enumerate(lv):
         seg = lambda t: t[0, 0, :, k * args.seg:(k + 1) * args.seg].mean().item()
         row = [seg(prints[m]) for m in ("nn", "fs", "gs")]
+        _rows.append((v, row))
         d = [row[0] - v, row[1] - v, row[2] - v]
         if abs(d[0]) > abs(worst[1]):
             worst = (v, d[0])
         print(f"{v:6.3f} {v:6.3f} | {row[0]:6.3f} {d[0]:+7.3f} | {row[1]:6.3f} "
               f"{d[1]:+7.3f} | {row[2]:6.3f} {d[2]:+7.3f}")
     print(f"\n模型最大偏差: 灰阶 {worst[0]:.3f} 处 {worst[1]:+.3f}")
-    print(f"形态: {'S 形（两端外鼓/中间内塌或反之）' if worst[1] else '无明显畸变'}")
+    # 形态判定：纯阶跃（中间一两级突变、两侧各跑一边）与 S 形（两端外鼓）
+    # 是两种病，前者才是 #12 的硬阶跃根因（见 PITFALLS #13）。
+    lv_d = [row[0] - v for v, row in _rows]
+    step = (max(lv_d) > 0.2 and min(lv_d) < -0.2
+            and abs(worst[1] - max(lv_d)) < 1e-9
+            and (max(lv_d) + min(lv_d)) > -0.05)
+    print(f"形态: {'阶跃（中段突变、两侧各跑一边 => 硬阈值断层）' if step else 'S 形（两端外鼓/中间内塌或反之）' if worst[1] else '无明显畸变'}")
 
     print("\n位图纹理质量（像素级抖动应各项方差≈0）")
     for m in ("nn", "fs", "gs"):
@@ -300,7 +308,6 @@ def cmd_norm(args):
     net = UNet(base=args.base).eval()
     lv = [0.0, 0.133, 0.267, 0.5, 0.733, 0.867, 1.0]
     print(f"架构探针：冻结随机 UNet(base={args.base}) 喂空间常数图")
-    print("若不同灰阶的输出差异随灰阶差单调增大 => 信息保留正常")
     print(f"{'灰阶':>6} {'logits均值':>12} {'logits标准差':>13}")
     outs = []
     for c in lv:
@@ -313,10 +320,33 @@ def cmd_norm(args):
     print("\n灰阶差 -> 输出差")
     for i in range(0, len(pair), max(1, len(pair) // 8)):
         print(f"  {pair[i][0]:.3f} -> {pair[i][1]:.6f}")
-    ok = pair[-1][1] > pair[0][1] * 3
-    verdict = "正常，灰阶信息保留" if ok else \
-        "异常！网络无法区分绝对灰阶，应怀疑 GroupNorm/BatchNorm 抹掉了均值信息"
+
+    # 判读：单调性 + 符号 + 对比度，三项都要过。
+    # 旧的“最大灰阶差输出差 > 3x 最小灰阶差输出差”任何非线性网络都能过，
+    # 反而放过了常数输入下输出恒 0（GroupNorm 通道内 std=0 直接抹掉）
+    # 和倒 U 形（0.5 处输出最大）两类真异常。PITFALLS #12。
+    means = [y.mean().item() for y in outs]
+    d = [means[i + 1] - means[i] for i in range(len(means) - 1)]
+    monotone = all(x > 0 for x in d) or all(x < 0 for x in d)
+    signed = means[-1] - means[0] != 0.0
+    contrast = pair[-1][1] > 1e-3
+    checks = [("单调（输出差随灰阶单向变化）", monotone),
+              ("有符号（最亮与最暗输出不同）", signed),
+              ("有对比度（输出差 > 1e-3）", contrast)]
+    for name, ok in checks:
+        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
+    ok = all(x for _, x in checks)
+    if ok:
+        verdict = "正常，灰阶信息保留"
+    elif not contrast:
+        verdict = "异常！不同灰阶输出几乎无差异，GroupNorm 抹掉了均值信息"
+    elif not signed:
+        verdict = "异常！输出无符号区分，网络对绝对灰阶不敏感"
+    else:
+        verdict = "异常！输出非单调，无法区分绝对灰阶大小"
     print(f"\n判读: {verdict}")
+    print("注意：这是空间常数图探针，只查信息通道在不在；平坦区能否长出")
+    print("抖动纹理要看 wedge 的行墨量 std（PITFALLS #12 的判据）。")
 
 
 # ---------------------------------------------------------------- compare

@@ -4,3 +4,4 @@ data/
 runs/
 out/
 *.pyc
+.pytest_cache
