@@ -49,7 +49,9 @@ from halftone.printer import build_printer, gaussian_blur
 def evaluate(ckpt_path, device, n_val=30, size=256, seed=1234):
     """验证集硬阈值指标：psnr（模拟打印 vs 目标）、孤立点率、明暗偏差。
 
-    这是唯一可信的指标（train.log 里的 psnr 是软前向值，会骗人，PITFALLS #4）。
+    这是唯一可信的指标（PITFALLS #4、#14）。注意 train.log 里退火轮记的
+    psnr 是**软前向**口径（T=0.03 时 ink 仍是 0.05~0.95 的软值），
+    与这里的硬阈值口径能差 20dB，两者不可直接比较。
     seed 固定验证集的随机裁剪/翻转：否则同 ckpt 两次评测能差 3dB 以上，
     pipeline 里"psnr 是否上涨"的逐轮策略会被噪声牵着走（PITFALLS #12）。
     """
