@@ -1,9 +1,19 @@
 # AGENTS.md
 
-神经半色调（neural-halftone）：U-Net 输入灰度图，输出喷墨可打印的 1-bit 二值位图；
-可微打印模拟器焊在损失函数里（网络反向补偿网点扩大）。另有 CMYK 2-bit 全彩路线
-（`--cmyk`，走 ICC 标定 + Neugebauer LUT + Lab ΔE，无可微打印模拟器）。
+神经半色调（neural-halftone）：NN 输入连续调图，直接输出喷墨可打印的位图，
+跳过传统 Floyd–Steinberg 误差扩散。两条路线并存：
+
+| 路线 | 入口 | 输出 | 物理建模 |
+|---|---|---|---|
+| **1-bit 灰度** | `train.py --printer film/paper` | 1-bit 二值位图 | 可微打印模拟器焊进损失函数（反向补偿网点扩大） |
+| **CMYK 2-bit 全彩** | `train.py --cmyk` | 4 通道 × 4 档墨量 | ICC 标定 LUT256 + Neugebauer + Lab ΔE2000（无可微模拟器） |
+
 Python + PyTorch，无构建系统、无 CI、**无单元测试**。
+
+**当前状态**（2026-10-19）：CMYK 路线已收敛——`runs/cmyk_v4/best.pt` 在
+photos_val 硬域 ΔE00 **10.77**，对 gs 工业 RIP **-19.17**（6/6 全胜）；
+距可用线 3.0 仍差 3.5 倍。1-bit 路线 film 线性物理下保真度赢不了 FS
+（PITFALLS #11），优势在 paper/exp 吸收模式的网点扩大预补偿。
 
 ## 文档优先级（会冲突，按此顺序信）
 
@@ -119,6 +129,10 @@ halftone/losses.py    HVS 低频损失 + 孤立点惩罚（CMYK 联合掩码）�
    （K 1/3 落成 C 档 2，ΔE 10.4），软期望与硬 argmax 是两个目标。PITFALLS #17。
 8. **自定义 loss 先用全零输入跑 backward**：CIEDE2000 在 a=b=0 处有 4 个
    0/0 型反传炸弹（`sqrt(0)`/`atan2(0,0)`/`**7`），随机输入永远碰不到。PITFALLS #16。
+9. **dithering 不能靠损失鼓励出来**：w_cov、降 T、gap penalty、硬 STE 直通、
+   4 独立 sigmoid 头全部证伪（PITFALLS #22/#24/#25/#26）。dithering 是**决策
+   机制**的属性，正确来源是推理后处理 `halftone/ed_fs.py`（eval.py cmyk --ed）。
+   训练前向走串行扩散会发散（PITFALLS #33）。
 
 ## 工程环境
 
