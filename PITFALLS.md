@@ -655,3 +655,17 @@ level3 块暗）。
 同类陷阱见 #6（PIL `convert("1")` bool 除 255 伪造假胜利）和 #18
 （tiffsep1 的 tif True=白）——**PIL/gs 的位图语义必须逐个用端点块验证，
 不能凭直觉写 1-x**。
+
+## 38. `runs/keep/` 是唯一可信权重，`--out` 重名会 resume 到旧权重
+
+清理磁盘时确认：`runs/cmyk_v4/best.pt`（photos_val ΔE00 10.41 复测一致）
+是当前唯一收敛权重，已连同 args/train.log/pipeline_log/lut256 一起
+复制到 `runs/keep/cmyk_v4_*`。**以后新实验一律用没见过的 `--out` 名**——
+`train.py` 默认 `resume=True`，重名会加载旧权重接着训，实验对比就不干净了
+（AGENTS.md 早有此条，这里补一次实证代价：三个废弃实验目录各 4-17M）。
+
+清理口径（2026-10-19，磁盘 87M → 3.3M runs / 3.9M out / 75M data）：
+- `runs/` 只留 `keep/`；`out/` 只留 `cmyk`、`cmyk_rip`、`dotgain`（标定靶）
+- `data/images/wave2/`（500 张旧灰度）删除——备份在 `/tmp/images_gray_backup`
+  且 `gen_data.py` 可随时重建；留着会让训练集混入 38% 旧分布
+- `data/preview.png`（191K，10月2日）删除：代码零引用，是早期遗留
