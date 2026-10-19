@@ -171,3 +171,16 @@ halftone/losses.py    HVS 低频损失 + 孤立点惩罚（CMYK 联合掩码）�
   `1 - arr.astype(np.float32)`，别除 255（PITFALLS #18）。
 - RIP ΔE 是**保守下界**：RIP 位图要过 LUT256 得量化到 4 档（`one_hot_from_cov`），
   丢掉了网点大小承载的亚像素覆盖率信息。真实 RIP 比这个数更好。
+
+# === AI 生成训练图（Stable Diffusion，替代脚本合成，见 PITFALLS #22）===
+uv run python gen_ai.py --n 2 --steps 15 --dry-run     # 小批试跑（不落盘）
+uv run python gen_ai.py --n 400 --steps 20 --size 512 --out data/images_ai
+uv run python gen_ai.py --n 100 --init data/images --strength 0.55  # 图生图
+
+- 首次需联网下 SD1.5 fp16 权重（~5.4G，走 hf-mirror；huggingface.co 直连不通）。
+  之后纯本地（`local_files_only=True` + `variant="fp16"`，缺 variant 会报
+  IncompleteSnapshotError）。
+- Quadro P2000 实测 512² 20 步 **21-35 s/张**（FP16 + attention slicing）。
+  400 张 ≈ 3.5 h，必须后台跑。
+- `--init` 图生图模式：以脚本合成图作 init，strength 0.55 保留结构多样性。
+- 自动过滤 SD 失败模式（近黑/近白/std<0.03/单色>85%），失败 seed 直接跳过。
