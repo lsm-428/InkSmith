@@ -44,8 +44,22 @@ uv run python eval.py one photo.jpg --ckpt runs/film/best.pt
 - `--gain`：网点扩大系数（dot gain），典型 1.2~1.8，可用打印测试图扫描标定。
 - `--w-iso`：孤立点惩罚权重。喷墨打不出可靠孤点时调大。
 
-## 下一步
+## 路线图（2026-10-19 更新）
 
-1. 用真实打印-扫描数据标定 `sigma`/`gain`，或把打印机模型换成标定好的点扩散函数；
-2. 输出从 1-bit 扩展为 2-bit 四档（无/小/中/大墨滴）；
-3. 扩展 CMYK 四通道，通道间用套印模型耦合。
+已完成：
+
+1. ~~2-bit 四档墨滴~~ → 已并入下面的 CMYK 路线（`--levels 4`）；
+2. ~~CMYK 四通道 + 套印模型~~ → **已实现**：`--cmyk` 走 ICC 标定
+   （FOGRA39L）+ LUT256 Neugebauer + Lab ΔE2000，`runs/cmyk_v4/best.pt`
+   在 photos_val 上硬域 ΔE00 **10.77**，对 gs 工业 RIP **-19.17**（6/6 全胜，
+   同 ICC 分离只比半色调算法）。详见 `WORKFLOW.md` 阶段 5。
+
+下一步（按优先级）：
+
+1. **网点扩大标定**（最大未开采优势）：`calib_target.py` 生成 256 块标定靶
+   → 真机打印 → `--analyze` 实测 Lab 重建 LUT256 → 接进训练。NN 可把
+   墨水/纸张偏差焊进损失反向补偿，RIP 结构上做不到；
+2. 用 `halftone/ed_fs.py` 的串行误差扩散修 1-bit 老路的条纹退化解
+   （PITFALLS #12/#13）；
+3. GCR（暗部偏好 K 墨）与通道去相关项；
+4. 把 ΔE00 从 10.77 压到 3.0 可用线（需标定 LUT + 更多训练数据）。

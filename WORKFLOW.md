@@ -106,54 +106,98 @@ uv run python eval.py infer 照片.jpg --ckpt runs/halftone/last.pt --out out/�
 
 **待做**：打印测试图 → 实测膜厚分布（轮廓仪）→ 拟合真实铺展核替换高斯。
 
-## 阶段 5（未做）：全彩 CMYK
+## 阶段 5（已实现 + 已收敛）：全彩 CMYK 2-bit
 
-单通道练稳后扩展全彩。架构上只有输出通道数、打印模型、损失三处变化，
-U-Net 与训练循环复用。
+> 2026-10-17 落地：`--cmyk` 全链路（train.py / eval.py cmyk / halftone/cmyk.py）。
+> 2026-10-19 全量训练收敛：`runs/cmyk_v4/best.pt`，photos_val 硬域 ΔE00 **10.77**
+> （4 轮退火 ΔE 16.05→16.66→8.75→7.24），对 gs 工业 RIP **-19.17**（6/6 全胜）。
 
-### 核心：可微 Neugebauer 叠印模型（替换 printer.py）
+### 已实现的模型（与阶段 5 原计划的差异）
 
 ```
-四通道二值图 → 各通道高斯扩散 → 覆盖率 C,M,Y,K ∈ [0,1]
-→ Demichel 方程：16 种叠印组合面积比 = 各通道覆盖率/互补的乘积
-   例：P(蓝) = C·M·(1-Y)·(1-K)
-→ 纸上颜色 = Σ₁₆ 面积比 × 原色反射率（Yule-Nielsen n 值修正）
-→ 模拟彩色图 vs 目标：Lab 空间 ΔE loss
+sRGB 目标图（in_ch=3）
+ → U-Net 输出 out_ch=4 × levels=4 logits → (B,4,H,W,4)
+ → 互斥 softmax（退火 T）/ 硬 argmax one-hot（STE 微调）
+ → 每通道覆盖率 cov = Σ p·[0,1/3,2/3,1]
+ → LUT256 查表（256 种 4 档组合的 Lab，FOGRA39L 标定）
+ → Lab 空间 ΔE2000 损失
 ```
 
-### 彩色特有的四个问题
+- **没有可微打印模拟器**：CMYK 网点扩大未标定（阶段 5 的"标定"一节未做），
+  所以 `--cmyk` 时 printer=None，损失直接比 Neugebauer 纸上 Lab。
+- **LUT256 取代 16 项 Demichel 面积加权**：4 档下组合数是 4⁴=256，
+  用 ICC 直接标定 256 个色块的 Lab（`build_lut256`），比"先算 16 项面积
+  再乘 16 个原色反射率"少一层建模误差，也不需要 Yule-Nielsen n 值。
+  代价是硬编码单一 ICC（默认 FOGRA39L，`--icc` 可换）。
+- **ICC 同时给出软目标**：`srgb_to_cov()` 把 sRGB 分离成四通道连续覆盖率，
+  作为 `l_cov` 的软监督目标（见 PITFALLS #17，w_cov=0.3）。
 
-| 问题 | 对策 |
-|---|---|
-| 叠印非线性（dot-on/off-dot） | Neugebauer 面积比近似；更高精度换 spectral Neugebauer |
-| 通道间摩尔纹 | loss 加通道去相关项；人眼对彩色低频纹极敏感 |
-| 总墨量上限 TAC (~240-320%) | 惩罚四通道覆盖率之和超限的像素 |
-| 灰成分替代 GCR | 暗部给 K 墨更低的"成本"，让模型偏好用 K 替 CMY |
+### 命令
 
-### 标定
+```bash
+# 1. 生成彩色训练图（照片化分布：--sat/--gamma 拉高 OOG 与动态范围）
+uv run python gen_data.py --n 800 --rgb --icc /usr/share/color/icc/colord/FOGRA39L_coated.icc \
+    --cmyk-frac 0.15 --sat 0.6 --gamma 1.4 --size 512
+# 2. 训练（默认 FOGRA39L、w_cov=0.3、w_tac=1.0、tac_max=3.2、target_de=3.0）
+uv run python train.py --cmyk --batch 4 --out runs/cmyk
+# 3. 评测：硬域 ΔE00 + 四通道 gs inkcov 审计 + OOG% + TAC（--rip 加工业基线）
+uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk/best.pt --rip
+# 4. 推理后处理：ED-FS 误差扩散（拿 dithering，多样性 1.77 vs 硬 argmax 1.1）
+uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk/best.pt --ed --rip
+```
 
-打印 16 原色色靶 → 扫描/拍照 → 拟合每种原色反射率与 n 值。
-建议先完成阶段 4 的单色标定流程，彩色标定复用同一条管线。
+**注意 `--batch 4`**：CMYK 的 256 组合张量链显存峰值远高于 1-bit，
+batch 16×256² 会 `CUBLAS_STATUS_ALLOC_FAILED`（PITFALLS #20）。
 
-### 顺序建议
+### 调参结论（GPU 全量实测，PITFALLS #17–#36）
 
-1. 单色流程全链路验证（阶段 1-4）；
-2. 先上 **2-bit 四档输出**（无/小/中/大墨滴）— 单通道内验证多档墨滴框架；
-3. 再全彩：4 通道 × 1-bit，Neugebauer 模型；
-4. 最终形态：4 通道 × 2-bit，即每个像素 4 种墨各 4 档。
+| 项 | 结论 | 依据 |
+|---|---|---|
+| `--w-cov 0.3` | 必须 >0；0 时跨通道作弊（K 1/3 落成 C 档 2） | PITFALLS #17 |
+| `--w-tac 1.0` | 保留；w_tac=0 时 TAC 失控到 1.85 | 真实数据 3 epoch 扫参 |
+| `--w-lab 1.0` | ΔE 主损失 | — |
+| `--tac-max 3.2` | TAC 上限（四通道墨量和） | 12 张照片单像素 TAC 99 分位 2.84 |
+| 退火终点 T | **0.003**（原 0.03，多档下 gap 不收敛） | PITFALLS #19/#23 |
+| 硬 STE 微调 | **CMYK 默认跳过**（毁退火成果，ΔE 6.38→42.04） | PITFALLS #19 |
+| `--gap-min` | 无效（被 l_lab 淹 2-3 个数量级） | PITFALLS #24 |
+| `--cmyk-ste-train` | 无效（STE 梯度与 argmax 不同步） | PITFALLS #25 |
+| `--seed-noise` | 无效（多样性没起来，ΔE 恶化 16.10） | PITFALLS #28 |
+| 邻域窗口损失 | 无效（软域作弊，ΔE 13.56） | PITFALLS #30 |
+| `--ed-fs` 训练前向 | **发散**（ΔE 48-60），勿用 | PITFALLS #33 |
+| `eval.py cmyk --ed` | ★**有效**（推理后处理，多样性 1.77，ΔE 持平） | PITFALLS #35/#36 |
+
+**残余 ΔE 的真因**（PITFALLS #26/#27）：不是 4 档量化误差（4 档可表达
+ICC 目标到 0.32/0.28/0.27/0.11），而是**单像素 argmax 天花板 3-5 ΔE00**——
+模型被逼用非 ICC 覆盖率换取色准。突破靠 ED-FS 推理后处理（亚档位覆盖率
+来自串行机制而非损失鼓励），实测 ΔE 10.52-11.05、多样性 1.77。
+
+**剩余差距与下一步**（当前 10.77 vs 目标 3.0，3.5 倍）：
+1. ~~全量训练~~ 已完成（ΔE 16.05→7.24 退火，photos_val 10.77）；
+2. ~~OOG~~ 已缓解（照片化数据 `--sat 0.6 --gamma 1.4`；photos_val 实测
+   OOG 0.3-18.4%，最高仍是 0003 的 18.4%）；
+3. **网点扩大标定**（最大未开采优势）：`calib_target.py` 已生成 256 块标定靶
+   （`out/dotgain/dotgain_target.pdf`），等真机打印 → `--analyze` 实测 Lab
+   重建 LUT256 → 接进训练。NN 可把墨水/纸张偏差焊进损失反向补偿，
+   RIP 结构上做不到；
+4. GCR（暗部偏好 K 墨）与通道去相关项尚未实现；
+5. 训练数据量：当前 800 张照片化合成图，真实照片 12 张未入训练集。
 
 ## 文件索引
 
 ```
-train.py             训练入口（默认自动编排；--rounds 1 为单段）
+train.py             训练入口（默认自动编排；--rounds 1 为单段；--cmyk 全彩 2-bit）
 eval.py              评测+诊断：infer 推理 / one / batch / wedge / data / norm / compare
+                     / cmyk（ΔE00 + 四通道 inkcov；--rip 工业基线；--ed ED-FS 后处理）
 webapp.py            网页版对照（单图/多图上传）
-gen_data.py          合成数据生成
+gen_data.py          合成数据生成（--rgb 彩色；--icc 走 ICC 分离；--sat/--gamma 照片化）
+calib_target.py      网点扩大标定靶生成 + 扫描分析（256 块 4 档全组合）
 calc_sigma.py        喷头参数 + 实测铺展 -> σ 计算器（出处可溯）
-halftone/model.py    U-Net + STE 二值化
-halftone/printer.py  可微打印模拟器（阶段 4 要改的就是这里）
-halftone/losses.py   HVS 低频损失 + 孤立点惩罚
-halftone/data.py     数据加载
+halftone/model.py    U-Net + STE 二值化 + 多档（in_ch/out_ch/levels）
+halftone/printer.py  可微打印模拟器（1-bit；CMYK 路线不用）
+halftone/cmyk.py     色彩层：LUT16/LUT256 + Neugebauer + sRGB↔Lab↔CMYK（ICC）
+halftone/ed_fs.py    FS 式逐行串行误差扩散（推理后处理，PITFALLS #32/#35）
+halftone/losses.py   HVS 低频损失 + 孤立点惩罚（CMYK 联合掩码）
+halftone/data.py     数据加载（RgbCrops，灰度自动转 3 通道）
 data/images/         训练图
 runs/                训练产物
 out/                 推理产物

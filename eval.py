@@ -4,6 +4,7 @@
   uv run python eval.py infer <图>                        -> 打印位图 + 模拟预览
   uv run python eval.py one   <图>  --ckpt <ckpt>         -> 单图三方对照 + inkcov 审计
   uv run python eval.py batch [文件夹] --ckpt <ckpt>      -> 批量三方对照（默认 data/photos_val）
+  uv run python eval.py cmyk  [文件夹] --ckpt <ckpt>      -> CMYK 多档：ΔE00 + 四通道 inkcov
 
 诊断（查问题，改配方前先跑）
   uv run python eval.py wedge  --ckpt <ckpt>              -> 灰度尺分段偏差 + 条纹检测
@@ -13,6 +14,7 @@
 
 三条路线（模型 / FS / GS 筛网）共用同一套物理语义：film 模型下灰度=相对膜厚，
 FS/GS 按"越暗墨越多"加网，必须反相输入才能对齐（film_target_and_base 负责）。
+CMYK 路线（--cmyk 训练的 ckpt）没有 FS/GS 基线，只用 ΔE00 与 gs inkcov 审计。
 """
 import argparse
 import glob
@@ -23,10 +25,14 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageCms
 from torchvision.utils import save_image
 
-from halftone.model import UNet
+from halftone.cmyk import (LEVELS, find_icc, lab_to_srgb,
+                           load_or_build_lut256, neugebauer_lab_2bit,
+                           srgb_to_cov, srgb_to_lab)
+from halftone.model import UNet, hard_levels
+from train import delta_e_2000
 from halftone.printer import build_printer
 
 GS_WORKDIR = Path("out/gs")
@@ -39,16 +45,21 @@ def psnr(a, b):
 
 
 def load_model_and_printer(ckpt_path, dpi=None, device=None):
-    """从 ckpt 重建 UNet + printer；film 模式下可用 dpi 覆盖预览/评估分辨率。"""
+    """从 ckpt 重建 UNet + printer；film 模式下可用 dpi 覆盖预览/评估分辨率。
+
+    CMYK ckpt（args.cmyk=True）：printer 为 None，返回 model 与 ckpt args。
+    """
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     a = ckpt["args"]
     if dpi and a.get("printer") == "film":
         a = {**a, "dpi": dpi}
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNet(base=a["base"], up=a.get("up", "nearest")).to(device)
+    model = UNet(base=a["base"], up=a.get("up", "nearest"),
+                 in_ch=a.get("in_ch", 1), out_ch=a.get("out_ch", 1),
+                 levels=a.get("levels", 1)).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
-    printer = build_printer(a).to(device)
+    printer = None if a.get("cmyk") else build_printer(a).to(device)
     return model, printer, a, device
 
 
@@ -92,18 +103,62 @@ def gs_halftone(img_pil, size, workdir):
 
 
 def gs_inkcov(bitmap_path):
-    """ghostscript inkcov 设备审计：返回 K 通道墨覆盖率。gs 失败则回退 NaN。"""
+    """ghostscript inkcov 设备审计：返回 C,M,Y,K 四通道墨覆盖率。gs 失败则 NaN。"""
     try:
         out = subprocess.run(
             ["gs", "-o", "-", "-sDEVICE=inkcov", bitmap_path],
             capture_output=True, text=True, check=True).stdout
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f"[inkcov] ghostscript 调用失败：{e}")
-        return float("nan")
+        return [float("nan")] * 4
     for line in out.splitlines():
         if "CMYK OK" in line:
-            return float(line.split()[3])  # C M Y K 中的 K
-    return float("nan")
+            return [float(x) for x in line.split()[:4]]  # C M Y K
+    return [float("nan")] * 4
+
+
+def rip_cmyk(img_rgb, icc, intent=1, workdir="out/rip_gs"):
+    """工业 RIP 基线：同 ICC 分离 + ghostscript 半色调 -> 四通道 1-bit 位图。
+
+    img_rgb: PIL RGB 图。icc: FOGRA39L 等 CMYK ICC 路径。
+    返回 (cov (4,H,W) float [0,1]，值=墨覆盖率) 或 None（gs 失败）。
+
+    **为什么是这个流程**（实测踩坑）：
+      - 直接 `gs tiffsep1` 渲 sRGB PDF 会用 gs **自带**的默认 CMYK profile
+        分离（gray50 的 K 只有 0.074，PIL FOGRA39L 给 0.184）——那测的是
+        gs 的默认 profile，不是我们的墨水，对比不公平。
+      - 先用 PIL `ImageCms` 按**同一个 ICC**分离成 CMYK PDF，再让 gs 只做
+        半色调（`tiffsep1`），分离结果与 PIL 连续调完全一致
+        （gray50 CMY 0.512/0.414/0.410 vs 连续调 0.510/0.416/0.412），
+        差异只剩「半色调算法」本身——这正是要对比的东西。
+      - tiffsep1 输出的是 1-bit 四通道位图；tif 是 mode "1"，`np.asarray`
+        给出 bool 数组，**True=白**（无墨），所以墨覆盖率 = 1 - mean。
+        注意别写成 `1 - arr/255`：bool 数组除 255 会把 True 变成 0.0039，
+        结果永远 ~0.998（实测踩过，PITFALLS #6 同类陷阱）。
+    """
+    wd = Path(workdir)
+    wd.mkdir(parents=True, exist_ok=True)
+    try:
+        srgb = ImageCms.createProfile("sRGB")
+        prof = ImageCms.getOpenProfile(icc)
+        xf = ImageCms.buildTransform(srgb, prof, "RGB", "CMYK",
+                                     renderingIntent=intent)
+        cmyk = ImageCms.applyTransform(img_rgb, xf)
+        pdf = wd / "_in.pdf"
+        cmyk.save(pdf, "PDF", resolution=72)
+        subprocess.run(["gs", "-dBATCH", "-dNOSAFER", "-dNOPAUSE", "-q",
+                        "-o", str(wd / "_o_"), "-sDEVICE=tiffsep1", "-r72",
+                        str(pdf)], capture_output=True, check=True)
+        covs = []
+        for name in ("Cyan", "Magenta", "Yellow", "Black"):
+            arr = np.asarray(Image.open(wd / f"_o_({name}).tif"))
+            # mode "1" -> bool；True=白。先转 0/1 float 再取反。
+            covs.append(1.0 - arr.astype(np.float32))
+        return np.stack(covs, 0)
+    except (subprocess.CalledProcessError, FileNotFoundError,
+            OSError, ValueError) as e:
+        print(f"[rip] ghostscript RIP 基线失败：{e}")
+        return None
 
 
 # ---------------------------------------------------------------- 共用
@@ -185,9 +240,12 @@ def cmd_one(args):
                               mode="L")
         pil.save(path)
         pil.save(f"{args.out}_{name}_bitmap.pdf", "PDF")  # gs 不认 PNG 输入
-        cov = gs_inkcov(f"{args.out}_{name}_bitmap.pdf")
-        warn = " ⚠️ 覆盖率过高，实心填充风险" if cov > 0.85 else ""
-        print(f"[inkcov] {name}: K 覆盖率 {cov:.1%} "
+        covs = gs_inkcov(f"{args.out}_{name}_bitmap.pdf")
+        if all(c != c for c in covs):
+            print(f"[inkcov] {name}: 失败 -> {path}")
+            continue
+        warn = " ⚠️ 覆盖率过高，实心填充风险" if max(covs) > 0.85 else ""
+        print(f"[inkcov] {name}: K 覆盖率 {covs[3]:.1%} "
               f"(张量自检 {ink.mean().item():.1%}){warn} -> {path}")
 
     grid = torch.cat([target, inks["nn"], prints["nn"], inks["fs"], prints["fs"],
@@ -270,13 +328,13 @@ def cmd_wedge(args):
 
 def cmd_data(args):
     """训练集平坦区占比与灰阶分布：查"数据够不够"。"""
-    from halftone.data import GrayCrops
+    from halftone.data import RgbCrops
     paths = sorted(glob.glob(f"{args.dir}/*.png"))
     if not paths:
         raise SystemExit(f"{args.dir} 里没有图，先生成：uv run python gen_data.py --n 500")
     print(f"训练集统计：{args.dir}，{len(paths)} 张，按 size={args.size} 采样 "
           f"{args.n} 个裁块（模型实际看到的）")
-    ds = GrayCrops(args.dir, size=args.size, length=args.n)
+    ds = RgbCrops(args.dir, size=args.size, length=args.n)
     k = torch.ones(1, 1, 3, 3) / 9.0
     fracs, levels, hist = [], [], torch.zeros(10)
     for i in range(len(ds)):
@@ -375,6 +433,137 @@ def cmd_compare(args):
           f"B-A {mb-ma:+.2f} dB  {'← B 更好' if mb > ma else '← A 更好或持平'}")
 
 
+# ---------------------------------------------------------------- cmyk
+
+def cmd_cmyk(args):
+    """CMYK 多档路线评测：硬域 Lab ΔE + 四通道 inkcov 审计 + RIP 基线对照。"""
+    from halftone.data import RgbCrops
+    model, printer, a, device = load_model_and_printer(args.ckpt)
+    if not a.get("cmyk"):
+        raise SystemExit(f"{args.ckpt} 不是 CMYK ckpt（args.cmyk != True）")
+    icc = find_icc(a.get("icc"))
+    intent = a.get("icc_intent", 0)
+    lut256 = load_or_build_lut256(Path(args.ckpt).parent, icc, intent)
+    files = sorted(Path(args.folder).glob("*.png")) + \
+        sorted(Path(args.folder).glob("*.jpg"))
+    if not files:
+        raise SystemExit(f"{args.folder} 里没有图片")
+    files = files[: args.limit]
+    outdir = Path(args.out)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    print(f"CMYK 评测：{len(files)} 张 | ckpt={args.ckpt} | ICC={icc} "
+          f"intent={intent} | 档位={a.get('levels')}")
+    print(f"{'图片':>12} {'NN ΔE':>7} {'RIP ΔE':>7} {'差':>6} | "
+          f"{'NN K':>6} {'RIP K':>6} | {'TAC':>5} {'OOG%':>6}")
+    rows = []
+    for f in files:
+        rgb = Image.open(f).convert("RGB")
+        w, h = rgb.size
+        pw, ph = (8 - w % 8) % 8, (8 - h % 8) % 8
+        arr = np.asarray(rgb, dtype=np.float32) / 255.0
+        t = torch.from_numpy(arr).permute(2, 0, 1)[None].to(device)
+        t = F.pad(t, (0, pw, 0, ph), mode="reflect")
+        lab_tg = srgb_to_lab(t.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+        with torch.no_grad():
+            logits = model(t)
+            if args.ed:
+                # ED-FS 推理后处理（PITFALLS #35）：多样性 1.77 vs 1.1，
+                # ΔE 持平。dithering 是决策机制的属性，不是损失能鼓励的。
+                from halftone.ed_fs import ed_fs
+                hard = ed_fs(logits, srgb_to_cov(
+                    t.permute(0, 2, 3, 1), icc, intent
+                    ).permute(0, 3, 1, 2), LEVELS.to(device))
+            else:
+                hard = hard_levels(logits / 0.01)
+            cov = (hard * LEVELS.view(1, 1, 1, 4).to(device)).sum(-1)
+            lab_nn = neugebauer_lab_2bit(hard, lut256)
+            de = delta_e_2000(lab_nn, lab_tg)
+            de95 = torch.quantile(de.flatten(), 0.95).item()
+        # RIP 基线：同 ICC 分离 + gs 半色调（1-bit 四通道）
+        rip = rip_cmyk(rgb, icc, intent) if args.rip else None
+        if rip is not None:
+            rip_t = torch.from_numpy(rip).unsqueeze(0).to(device)
+            if rip_t.shape[-2:] != (t.shape[2], t.shape[3]):
+                rip_t = F.interpolate(rip_t, size=(t.shape[2], t.shape[3]),
+                                      mode="nearest")
+            lab_rip = neugebauer_lab_2bit(
+                one_hot_from_cov(rip_t), lut256)
+            de_rip = delta_e_2000(lab_rip, lab_tg).mean().item()
+            rip_k = float(rip[3].mean())
+        else:
+            de_rip, rip_k = float("nan"), float("nan")
+        # OOG：目标色是否在 CMY 四面体外（线性化后 XYZ 分量和 > 1）
+        lin = t.permute(0, 2, 3, 1).clamp(0, 1)
+        lin = torch.where(lin <= 0.04045, lin / 12.92,
+                          ((lin + 0.055) / 1.055) ** 2.4)
+        xyz = lin @ torch.tensor([[0.4124, 0.3576, 0.1805],
+                                  [0.2126, 0.7152, 0.0722],
+                                  [0.0193, 0.1192, 0.9505]],
+                                 device=device)
+        oog = (xyz.sum(-1) > 1.0).float().mean().item() * 100
+        # 落盘四通道位图 + inkcov 审计
+        cov_np = cov[0].cpu().numpy()
+        chans = [Image.fromarray((cov_np[c] * 255).astype(np.uint8), "L")
+                 for c in range(4)]
+        merged = Image.merge("CMYK", chans)
+        pdf = outdir / f"{f.stem}_cmyk.pdf"
+        merged.save(pdf, "PDF", resolution=72)
+        ink_covs = gs_inkcov(str(pdf))
+        if all(c == c for c in ink_covs):
+            ink_str = " ".join(f"{c:.3f}" for c in ink_covs)
+            gs_cov = float(np.mean(ink_covs))
+        else:
+            ink_str, gs_cov = "inkcov 失败", cov_np.mean()
+        tac = cov.sum(1).mean().item()
+        rows.append({"de": de.mean().item(), "de95": de95,
+                     "gs_cov": gs_cov, "tac": tac,
+                     "de_rip": de_rip, "rip_k": rip_k})
+        print(f"{f.stem[:12]:>12} {de.mean().item():7.2f} {de_rip:7.2f} "
+              f"{de_rip - de.mean().item():+6.2f} | "
+              f"{cov_np[3].mean():6.3f} {rip_k:6.3f} | {tac:5.2f} {oog:6.1f}%")
+        # 预览：目标 | 网络 ICC 合成 | RIP 合成 | NN C 覆盖 | NN K 覆盖 | RIP K 覆盖
+        rgb_nn = lab_to_srgb(lab_nn[0].permute(1, 2, 0)).clamp(0, 1).cpu().numpy()
+        H = min(arr.shape[0], rgb_nn.shape[0])
+        W = min(arr.shape[1], rgb_nn.shape[1])
+        gray = lambda ch: np.stack([(cov_np[ch][:H, :W] * 255).astype(np.uint8)] * 3, -1)
+        panels = [(arr[:H, :W, :3] * 255).astype(np.uint8),
+                  (rgb_nn[:H, :W] * 255).astype(np.uint8), gray(0), gray(3)]
+        if rip is not None:
+            rk = 1.0 - np.asarray(Image.open(
+                Path("out/rip_gs") / "_o_(Black).tif")).astype(np.float32)
+            panels.append(np.stack([(rk[:H, :W] * 255).astype(np.uint8)] * 3, -1))
+        Image.fromarray(np.concatenate(panels, axis=1), "RGB").save(
+            outdir / f"{f.stem}_cmyk.png")
+    de_m = float(np.mean([r["de"] for r in rows]))
+    de95_m = float(np.mean([r["de95"] for r in rows]))
+    tac_m = float(np.mean([r["tac"] for r in rows]))
+    print(f"\n均值 ΔE00 {de_m:.2f} | p95 {de95_m:.2f} | TAC {tac_m:.2f} "
+          f"| gs 覆盖率 {np.mean([r['gs_cov'] for r in rows]):.3f}")
+    if any(r["de_rip"] == r["de_rip"] for r in rows):
+        rip_m = float(np.nanmean([r["de_rip"] for r in rows]))
+        print(f"RIP 基线（同 ICC 分离 + gs 半色调）ΔE00 {rip_m:.2f} | "
+              f"NN - RIP = {de_m - rip_m:+.2f}")
+        print("判读：ΔE00 差 <1 说明 NN 已达工业半色调水平；正数=NN 更好。")
+    print(f"位图/预览：{outdir}/<名>_cmyk.pdf / _cmyk.png "
+          f"（PDF 行= C M Y K 四通道）")
+    print("判读：ΔE00 < 3 可用；TAC 应 <= 3.2；OOG% 高说明训练集缺极端色相。")
+
+
+def one_hot_from_cov(cov4):
+    """连续覆盖率 (B,4,H,W) -> 4 档 one-hot (B,4,H,W,4)。
+
+    RIP 基线是连续调半色调结果（覆盖率本就是 0/1 之外的整幅统计量），
+    要过 LUT256 必须量化到最近档位。这是**有损**的：RIP 的 1-bit 位图
+    本身携带亚像素级覆盖率信息（网点大小），量化到 4 档会丢掉它，
+    所以 RIP ΔE 是「RIP 位图量化回 4 档」的下界估计，偏保守。
+    """
+    lv = torch.round(cov4 * 3).clamp(0, 3).long()          # (B,4,H,W)
+    p = torch.zeros(*cov4.shape, 4, device=cov4.device)
+    p.scatter_(-1, lv.unsqueeze(-1), 1.0)
+    return p
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -414,6 +603,18 @@ def main():
     d.add_argument("--n", type=int, default=256)
     d.add_argument("--flat-std", type=float, default=0.02)
     d.set_defaults(func=cmd_data)
+
+    k = ckpt_arg(sub.add_parser("cmyk", help="CMYK 多档：ΔE00 + 四通道 inkcov"))
+    k.add_argument("folder", nargs="?", default="data/photos_val")
+    k.add_argument("--limit", type=int, default=8)
+    k.add_argument("--out", default="out/cmyk")
+    k.add_argument("--rip", action="store_true",
+                   help="加一列 ghostscript RIP 基线（同 ICC 分离 + tiffsep1 半色调）")
+    k.add_argument("--ed", action="store_true",
+                   help="推理走 ED-FS 误差扩散后处理（PITFALLS #35：多样性 "
+                        "1.77 vs 1.1，ΔE 持平）——dithering 是决策机制的属性，"
+                        "不用改训练")
+    k.set_defaults(func=cmd_cmyk)
 
     m = sub.add_parser("norm", help="网络能否区分绝对灰阶")
     m.add_argument("--base", type=int, default=32)
