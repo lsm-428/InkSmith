@@ -43,25 +43,37 @@ def srgb_to_cov_pil(srgb, icc, intent=0):
 
 
 def build(icc, out_dir, intent=0):
-    """生成 256 色块靶：4 个通道各 4 档的全组合，ICC 分离后量化回 4 档。"""
+    """生成 256 色块靶：4 个通道各 4 档的全组合，ICC 分离后量化回 4 档。
+
+    **PIL CMYK 语义陷阱**（实测踩坑）：`Image.fromarray(arr, "CMYK")` 会把
+    numpy 数组的字节当成「墨量」（0=无墨），但 save PDF 时 ghostscript 按
+    「无墨量」解释同一字节——结果整幅靶**颜色反转**：全 level0（应白）
+    渲成 RGB(0,0,0) 黑，全 level3（应满墨黑）渲成白。
+
+    正确做法：用 `Image.new("CMYK", size, (c,m,y,k))` 逐块构造，
+    值是**无墨量** 0-255（0=无墨=白，255=全墨）。或者更稳：
+    先用 numpy 拼 CMYK 数组、`Image.fromarray` 后**反转**再存 PDF。
+    """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     # 256 组合（4 通道 × 4 档），按 itertools.product 顺序与 LUT256 索引一致
     combos = list(itertools.product(range(4), repeat=4))
-    grid = np.zeros((PATCH * COLS, PATCH * COLS, 4), np.uint8)   # CMYK 0-255
+    # CMYK 无墨量数组（0=无墨=白，255=全墨）；putdata 逐块填充
+    grid = np.full((PATCH * COLS, PATCH * COLS, 4), 0, np.uint8)
     meta = []
     for idx, lv in enumerate(combos):
         r, c = divmod(idx, COLS)
-        # 该色块的"名义"CMYK：档位 -> 墨量 -> PIL 的 0-255（0=无墨）
-        cmyk255 = [int(round((1.0 - lv[i] / 3.0) * 255)) for i in range(4)]
-        grid[r * PATCH:(r + 1) * PATCH, c * PATCH:(c + 1) * PATCH] = cmyk255
-        meta.append({"idx": idx, "levels": list(lv), "cmyk255": cmyk255,
+        # 档位 -> 无墨量：lv0->0(白/无墨)，lv3->255(满墨)
+        nolv = [int(round(lv[i] / 3.0 * 255)) for i in range(4)]
+        grid[r * PATCH:(r + 1) * PATCH, c * PATCH:(c + 1) * PATCH] = nolv
+        meta.append({"idx": idx, "levels": list(lv), "cmyk255": nolv,
                      "cell": [r, c]})
     pdf = out / "dotgain_target.pdf"
     Image.fromarray(grid, "CMYK").save(pdf, "PDF", resolution=72)
     (out / "manifest.json").write_text(json.dumps(
         {"combos": combos, "meta": meta, "patch": PATCH, "cols": COLS,
-         "icc": str(icc), "intent": intent}, indent=1))
+         "icc": str(icc), "intent": intent,
+         "cmyk255_semantics": "无墨量 0-255（0=无墨=白，255=满墨）"}, indent=1))
     print(f"靶已生成：{pdf}（{COLS}x{COLS}=256 块，每块 {PATCH}px @72dpi）")
     print(f"manifest：{out / 'manifest.json'}")
     print("下一步：用真打印机打印该 PDF（关色彩管理、100% 墨量），扫描/拍照。")
