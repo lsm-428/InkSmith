@@ -1,4 +1,15 @@
-# neural-halftone
+<div align="center">
+
+# 墨匠 InkSmith
+
+**学会打印，而不是渲染** · *Learn to print, not to render*
+
+</div>
+
+> **Smith 作动词是"锻造"。** 这个项目的标志性动作就是把可微打印机物理**焊进
+> 损失函数**，然后拿真实墨水/纸张标定去**锻造**它——锻造的是墨，不是渲染像素。
+> 这不是自我贴金：CMYK 路线实测 ΔE00 **8.92 vs 工业 RIP 30.46**，12/12 全胜
+> gs tiffsep1，比工业工具更会放墨。
 
 神经半色调：NN 输入连续调图，**直接输出喷墨可打印的位图**，跳过传统
 Floyd–Steinberg 误差扩散流程。两条路线：
@@ -6,7 +17,7 @@ Floyd–Steinberg 误差扩散流程。两条路线：
 | 路线 | 输入 | 输出 | 物理建模 | 状态 |
 |---|---|---|---|---|
 | **1-bit 灰度** `--printer film/paper` | 灰度图 | 1-bit 二值位图 | 可微打印模拟器（网点扩大预补偿） | 原型；film 线性物理下保真度赢不了 FS（PITFALLS #11），优势在 paper/exp 吸收模式 |
-| **CMYK 2-bit 全彩** `--cmyk` | sRGB 图 | 4 通道 × 4 档墨量 | ICC 标定 LUT256 + Neugebauer + Lab ΔE2000（无可微模拟器） | **已收敛**：photos_val 硬域 ΔE00 **10.77**，对 gs 工业 RIP **-19.17**（6/6 全胜） |
+| **CMYK 2-bit 全彩** `--cmyk` | sRGB 图 | 4 通道 × 4 档墨量 | ICC 标定 LUT256 + Neugebauer + Lab ΔE2000（无可微模拟器） | **已收敛**：photos_val 硬域 ΔE00 **8.92**，对 gs 工业 RIP **-21.54**（12/12 全胜） |
 
 ## 原理
 
@@ -64,14 +75,14 @@ uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk/best.pt --rip
 - CMYK 路线：`--w-cov 0.3`（必须 >0，否则跨通道作弊，PITFALLS #17）、
   `--w-tac 1.0`、`--tac-max 3.2`、退火终点 T 0.003。
 
-## 路线图（2026-10-19 更新）
+## 路线图（2026-10-20 更新）
 
 已完成：
 
 1. ~~2-bit 四档墨滴~~ → 已并入 CMYK 路线（`--levels 4`）；
 2. ~~CMYK 四通道 + 套印模型~~ → **已实现并收敛**：`--cmyk` 走 ICC 标定
-   （FOGRA39L）+ LUT256 Neugebauer + Lab ΔE2000，`runs/cmyk_v4/best.pt`
-   在 photos_val 上硬域 ΔE00 **10.77**，对 gs 工业 RIP **-19.17**（6/6 全胜，
+   （FOGRA39L）+ LUT256 Neugebauer + Lab ΔE2000，`runs/cmyk_sd/best.pt`
+   在 photos_val 上硬域 ΔE00 **8.92**，对 gs 工业 RIP **-21.54**（12/12 全胜，
    同 ICC 分离只比半色调算法）。详见 `WORKFLOW.md` 阶段 5。
 
 下一步（按优先级）：
@@ -82,4 +93,4 @@ uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk/best.pt --rip
 2. 用 `halftone/ed_fs.py` 的串行误差扩散修 1-bit 老路的条纹退化解
    （PITFALLS #12/#13）；
 3. GCR（暗部偏好 K 墨）与通道去相关项；
-4. 把 ΔE00 从 10.77 压到 3.0 可用线（需标定 LUT + 更多训练数据）。
+4. 把 ΔE00 从 8.92 压到 3.0 可用线（需标定 LUT + 更多训练数据）。

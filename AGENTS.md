@@ -1,7 +1,8 @@
 # AGENTS.md
 
-神经半色调（neural-halftone）：NN 输入连续调图，直接输出喷墨可打印的位图，
-跳过传统 Floyd–Steinberg 误差扩散。两条路线并存：
+**墨匠 InkSmith** —— *学会打印，而不是渲染*（Learn to print, not to render）。
+神经半色调：NN 输入连续调图，直接输出喷墨可打印的位图，跳过传统
+Floyd–Steinberg 误差扩散。两条路线并存：
 
 | 路线 | 入口 | 输出 | 物理建模 |
 |---|---|---|---|
@@ -10,10 +11,11 @@
 
 Python + PyTorch，无构建系统、无 CI、**无单元测试**。
 
-**当前状态**（2026-10-19）：CMYK 路线已收敛——`runs/cmyk_v4/best.pt` 在
-photos_val 硬域 ΔE00 **10.77**，对 gs 工业 RIP **-19.17**（6/6 全胜）；
-距可用线 3.0 仍差 3.5 倍。1-bit 路线 film 线性物理下保真度赢不了 FS
-（PITFALLS #11），优势在 paper/exp 吸收模式的网点扩大预补偿。
+**当前状态**（2026-10-20）：CMYK 路线已收敛——`runs/cmyk_sd/best.pt`（400 张
+Stable Diffusion 生成图训练）在 photos_val 硬域 ΔE00 **8.92**，对 gs 工业
+RIP **-21.54**（12/12 全胜）；距可用线 3.0 仍差 3.0 倍。1-bit 路线 film 线性
+物理下保真度赢不了 FS（PITFALLS #11），优势在 paper/exp 吸收模式的网点扩大
+预补偿。训练数据已从脚本合成升级为 AI 生成（PITFALLS #39/#40）。
 
 ## 文档优先级（会冲突，按此顺序信）
 
