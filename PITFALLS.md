@@ -751,3 +751,26 @@ SD 图饱和度 0.31、OOG 13.9%（照片 11.3%），比脚本合成接近得多
 0.237→0.135（接近照片）、亮度 0.222→0.163（太暗）。三个量同时对齐很难，
 而且即便对齐了也复现不了纹理真实性。**要照片域就继续用 SD 生成，不要
 走"脚本 + 后处理调色"这条路。**
+
+## 41. `calib_target.py --analyze` 已补 LUT256 重建（网点扩大标定链路打通）
+
+`analyze()` 原来只输出 `measured_rgb.json`（实测 RGB），缺"实测 Lab →
+重建 LUT256"这一环，拿到扫描图也用不了。现已补齐：
+
+- 产物三件：`measured_rgb.json`（原有）+ **`measured_lut256.npy`**
+  （实测 Lab 重建的 LUT256）+ `measured_lut256_meta.json`（偏差统计：
+  L2 均值/p95/max + 偏差最大的 10 个块）
+- 语义：`build_lut256` 是 ICC 的**理想**叠印（假设油墨完美叠加、无铺展），
+  `measured_lut256.npy` 是**你这台打印机+墨水+纸张**的真实叠印（含网点
+  扩大、通道串扰）。后者才是 NN 相对 RIP 的优势来源——RIP 结构上不知道
+  你的墨水和纸。
+- 用法：打印 `out/dotgain/dotgain_target.pdf`（关色彩管理、100% 墨量、
+  对应纸张）→ 扫描 → `python calib_target.py --analyze 扫描.png` →
+  把 `measured_lut256.npy` 拷成 `runs/<exp>/lut256.npy` 并改 meta 的
+  `"measured": true` 字段（否则元数据不匹配会触发重建，白测）。
+
+**自检方法**（本机无打印机/扫描仪时）：用 `gs -sDEVICE=png16m -r72` 把
+靶 PDF 渲成 PNG 当"虚拟扫描图"跑 `--analyze`。实测端点正常
+（idx0=白 L100、idx15=满 CMY 近黑、idx255=全满墨 L0），偏差 L2 均值 4.09
+——这个偏差是 gs 渲染自身的色彩管理差异，**不是**真实网点扩大，
+所以虚拟自检只能验链路通不通，数值没有标定意义。
