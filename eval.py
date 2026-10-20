@@ -541,8 +541,11 @@ def cmd_cmyk(args):
         with torch.no_grad():
             logits = model(t)
             if args.ed:
-                # ED-FS 推理后处理（PITFALLS #35）：多样性 1.77 vs 1.1，
-                # ΔE 持平。dithering 是决策机制的属性，不是损失能鼓励的。
+                # ED-FS 推理后处理。dithering 是决策机制的属性，不是损失
+                # 能鼓励的（#22/#24/#25/#26/#30/#33 全部证伪）。
+                # ⚠ 但 ED 会把模型贡献洗成 0（#45）：ed_fs 吃 ICC 真值
+                # target_cov，模型学的正是同一目标。开 ED 前后的 ΔE 不能
+                # 算作网络能力。
                 from halftone.ed_fs import ed_fs
                 hard = ed_fs(logits, srgb_to_cov(
                     t.permute(0, 2, 3, 1), icc, intent
@@ -558,7 +561,8 @@ def cmd_cmyk(args):
         # RIP 基线：同 ICC 分离 + gs 半色调（1-bit 四通道）
         # ⚠ 必须喂**补边后**的图（PITFALLS #43）：直接 rip 原图再 interpolate
         # 拉伸会给 RIP 加 1.4% 非等比缩放，实测把 RIP 抬差 1.74 ΔE00
-        # （30.22 vs 28.48），是白送 NN 的分数。
+        # （30.22 vs 28.48，**逐像素口径**；视觉口径下抬高量更小但仍存在），
+        # 是白送 NN 的分数。
         rip = rip_cmyk(padded_rgb, icc, intent) if args.rip else None
         if rip is not None:
             rip_t = torch.from_numpy(rip).unsqueeze(0).to(device)
@@ -636,11 +640,16 @@ def cmd_cmyk(args):
 def one_hot_from_cov(cov4):
     """连续覆盖率 (B,4,H,W) -> 4 档 one-hot (B,4,H,W,4)。
 
-    RIP 基线是连续调半色调结果（覆盖率本就是 0/1 之外的整幅统计量），
-    要过 LUT256 必须量化到最近档位。这是**有损**的：RIP 的 1-bit 位图
-    本身携带亚像素级覆盖率信息（网点大小），量化到 4 档会丢掉它，
-    所以 RIP ΔE 是「RIP 位图量化回 4 档」的下界估计，偏保守。
-    """
+    对 RIP 基线而言这一步是**无损**的：`rip_cmyk` 返回的 cov 已经是
+    {0,1} 二值（`np.unique(cov) == [0., 1.]`，2026-10-20 审核实测），
+    `round(cov*3)` 是恒等映射，round-trip 最大误差 0.0。
+
+    ⚠ 早前 docstring 说「RIP 位图携带网点大小的亚像素覆盖率信息，量化
+    会丢掉它，所以 RIP ΔE 是保守下界」——**该论证不成立**（PITFALLS
+    #46）。tiffsep1 在 -r72 下输出的就是逐像素 0/1，亚像素信息只存在于
+    更高采样率（真机 1440dpi 打印时网点确实小于 72dpi 的一个像素），
+    而我们这套评测全链路是 72dpi 单像素口径，两边都没有亚像素信息。
+    ⇒ RIP ΔE00 5.77 是**公允值**，不是下界。"""
     lv = torch.round(cov4 * 3).clamp(0, 3).long()          # (B,4,H,W)
     p = torch.zeros(*cov4.shape, 4, device=cov4.device)
     p.scatter_(-1, lv.unsqueeze(-1), 1.0)

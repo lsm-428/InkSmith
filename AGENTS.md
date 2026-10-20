@@ -186,8 +186,10 @@ halftone/losses.py    HVS 低频损失 + 孤立点惩罚（CMYK 联合掩码）�
   分离成 CMYK PDF → `gs -sDEVICE=tiffsep1 -r72` 出四张 1-bit 位图。中间产物落在
   `out/rip_gs/`。tiffsep1 的 tif 是 mode "1"（bool，**True=白**），墨覆盖率 =
   `1 - arr.astype(np.float32)`，别除 255（PITFALLS #18）。
-- RIP ΔE 是**保守下界**：RIP 位图要过 LUT256 得量化到 4 档（`one_hot_from_cov`），
-  丢掉了网点大小承载的亚像素覆盖率信息。真实 RIP 比这个数更好。
+- **RIP ΔE 是公允值，不是下界**（2026-10-20 审核修正，PITFALLS #46）：
+  `rip_cmyk` 返回 {0,1} 二值，`one_hot_from_cov` 的 `round(cov*3)` 是恒等
+  映射（round-trip 误差 0.0）。早前「量化丢亚像素信息、RIP 偏保守」的
+  论证不成立——72dpi 评测链路下双方都没有亚像素信息。
 
 ## 数据生成：AI 生成训练图（Stable Diffusion，替代脚本合成，见 PITFALLS #22）
 uv run python gen_ai.py --n 2 --steps 15 --dry-run     # 小批试跑（不落盘）
