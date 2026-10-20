@@ -163,15 +163,44 @@ def rip_cmyk(img_rgb, icc, intent=1, workdir="out/rip_gs"):
 
 # ---------------------------------------------------------------- 共用
 
-def triplet(img, ckpt, dpi=None):
-    """同一张图跑 模型/FS/GS 三条路线，返回 (inks, prints, target, ckpt_args)。"""
+def onebit_ink(logits, target_cov, ed=False, bias_gain=4.0):
+    """1-bit 路线的位图决策：硬阈值，或 ED-FS 推理后处理。
+
+    `target_cov` 是**目标墨覆盖率**，不是图像灰度：film 下灰度=膜厚=覆盖率，
+    paper 下灰度=打印后亮度（1=白纸）故覆盖率=1-灰度。
+
+    1-bit 没有「档位」维，`ed_fs` 需要 L=2 的 logits（[不落墨, 落墨]）。
+    直接拿网络原始 logits 当先验即可：负值偏 0 档、正值偏 1 档，与
+    硬阈值 `logits>0` 的决策边界一致，只是把逐像素独立决策换成串行误差扩散。
+
+    PITFALLS #12/#13 的条纹退化解（行墨量 std 0.157）正是逐像素独立决策
+    的产物；ed_fs 把量化误差扩散给后续像素，邻域被迫选不同值 => dithering
+    是机制的必然结果，不靠损失鼓励（#29/#32 的同一结论）。
+    """
+    if not ed:
+        return (logits > 0).float()
+    from halftone.ed_fs import ed_fs
+    lv = torch.tensor([0.0, 1.0], device=logits.device)
+    z2 = torch.stack([torch.zeros_like(logits), logits], dim=-1)  # (B,1,H,W,2)
+    return ed_fs(z2, target_cov, lv, bias_gain=bias_gain)[..., 1]
+
+
+def triplet(img, ckpt, dpi=None, ed=False):
+    """同一张图跑 模型/FS/GS 三条路线，返回 (inks, prints, target, ckpt_args)。
+
+    ed=True 时模型的位图走 ED-FS 后处理（`onebit_ink`），基线不受影响。
+    """
     model, printer, a, device = load_model_and_printer(ckpt, dpi=dpi)
     film = a.get("printer", "paper") == "film"
     target, base_img = film_target_and_base(img, film, device)
     size = (target.shape[3], target.shape[2])
     GS_WORKDIR.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
-        inks = {"nn": (model(target) > 0).float(),
+        logits = model(target)
+        # CMYK ckpt（out_ch=4）不能用 1-bit 决策，忽略 --ed
+        use_ed = ed and a.get("out_ch", 1) == 1
+        cov_tg = target if film else 1.0 - target
+        inks = {"nn": onebit_ink(logits, cov_tg, ed=use_ed),
                 "fs": floyd_steinberg(base_img, size).to(device),
                 "gs": gs_halftone(base_img, size, GS_WORKDIR).to(device)}
         prints = {k: printer(v) for k, v in inks.items()}
@@ -207,7 +236,10 @@ def cmd_infer(args):
     w, h = img.size
     target, _ = film_target_and_base(img, False, device)  # 推理不需基线反相
     with torch.no_grad():
-        ink = (model(target) > 0).float()[..., :h, :w]   # 裁回原尺寸
+        logits = model(target)
+        use_ed = args.ed and a.get("out_ch", 1) == 1
+        cov_tg = target if a.get("printer") == "film" else 1.0 - target
+        ink = onebit_ink(logits, cov_tg, ed=use_ed)[..., :h, :w]   # 裁回原尺寸
         printed = printer(ink)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     bitmap = (ink[0, 0].cpu().numpy() * 255).astype(np.uint8)      # 1=墨
@@ -223,7 +255,7 @@ def cmd_infer(args):
 def cmd_one(args):
     """单图三方对照 + inkcov 审计 + 七行对比图。"""
     inks, prints, target, a = triplet(Image.open(args.input).convert("L"),
-                                      args.ckpt, args.dpi)
+                                      args.ckpt, args.dpi, ed=args.ed)
     if a.get("printer") == "film":
         print("[film] 膜基模式：模拟输出=相对膜厚，基线用反相图加网")
     outdir = Path(args.out).parent
@@ -266,7 +298,7 @@ def cmd_batch(args):
     rows = []
     for f in files:
         _, prints, target, a = triplet(Image.open(f).convert("L"),
-                                       args.ckpt, args.dpi)
+                                       args.ckpt, args.dpi, ed=args.ed)
         if rows == [] and a.get("printer") == "film":
             print("[film] 膜基模式：模拟输出=相对膜厚，基线用反相图加网")
         r = [psnr(prints[m], target) for m in ("nn", "fs", "gs")]
@@ -286,7 +318,7 @@ def cmd_wedge(args):
     arr = np.concatenate([np.full((args.seg, args.seg), v, np.float32) for v in lv],
                         axis=1)
     inks, prints, target, a = triplet(Image.fromarray((arr * 255).astype("uint8"), "L"),
-                                      args.ckpt, args.dpi)
+                                      args.ckpt, args.dpi, ed=args.ed)
     print(f"灰度尺 {args.levels} 阶 @ {args.dpi or a.get('dpi')} dpi "
           f"(ckpt={args.ckpt}, {a.get('printer')})")
     print(f"\n全图 PSNR: 模型 {psnr(prints['nn'], target):.2f} | "
@@ -575,6 +607,10 @@ def main():
         sp.add_argument("--ckpt", default=default)
         sp.add_argument("--dpi", type=int, default=None,
                         help="film 模式：按此 dpi 评估（默认 ckpt 里的）")
+        sp.add_argument("--ed", action="store_true",
+                        help="推理走 ED-FS 误差扩散后处理。1-bit：修 PITFALLS "
+                             "#12/#13 条纹退化解（实测 14.80->23.35dB，12/12 胜 FS）；"
+                             "CMYK：多样性提升（#35/#39，是否有利看权重）")
         return sp
 
     i = ckpt_arg(sub.add_parser("infer", help="单图推理 -> 打印位图 + 预览"),
@@ -610,10 +646,7 @@ def main():
     k.add_argument("--out", default="out/cmyk")
     k.add_argument("--rip", action="store_true",
                    help="加一列 ghostscript RIP 基线（同 ICC 分离 + tiffsep1 半色调）")
-    k.add_argument("--ed", action="store_true",
-                   help="推理走 ED-FS 误差扩散后处理（PITFALLS #35：多样性 "
-                        "1.77 vs 1.1，ΔE 持平）——dithering 是决策机制的属性，"
-                        "不用改训练")
+    # --ed 已由 ckpt_arg 提供（1-bit 与 CMYK 共用同一个开关）
     k.set_defaults(func=cmd_cmyk)
 
     m = sub.add_parser("norm", help="网络能否区分绝对灰阶")

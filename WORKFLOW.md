@@ -75,7 +75,7 @@ uv run python train.py --rounds 1 --data data/images --epochs 20 --length 2000
 | 症状 | 调法 |
 |---|---|
 | 墨点团聚成块 / 孤立点多 | 调大 `--w-iso`（pipeline 会自动加倍，封顶 0.2） |
-| 灰度尺呈 S 形畸变 | 查 `eval.py wedge` 的行墨量 std，是条纹退化解（见 PITFALLS #12） |
+| 灰度尺呈 S 形畸变 | 查 `eval.py wedge` 的行墨量 std，是条纹退化解（见 PITFALLS #12）。**已解决**：推理加 `--ed`（14.80→24.67dB，详见 PITFALLS #42） |
 | 中间调发脏/层次糊 | 检查 `--sigma-um` 是否匹配真实墨点（film）或调大 `--w-hvs` |
 | 整体偏黑/偏白 | paper 调 `--gain`；film 看 `eval.py one` 的 inkcov 与目标覆盖率 |
 | 退火全程躺平不涨 | 打印模糊 σ 必须 ≳1.4px（film: `--sigma-um 25 --dpi 1440`），见 PITFALLS #11 |
@@ -229,7 +229,7 @@ calc_sigma.py        喷头参数 + 实测铺展 -> σ 计算器（出处可溯�
 halftone/model.py    U-Net + STE 二值化 + 多档（in_ch/out_ch/levels）
 halftone/printer.py  可微打印模拟器（1-bit；CMYK 路线不用）
 halftone/cmyk.py     色彩层：LUT16/LUT256 + Neugebauer + sRGB↔Lab↔CMYK（ICC）
-halftone/ed_fs.py    FS 式逐行串行误差扩散（推理后处理，PITFALLS #32/#35）
+halftone/ed_fs.py    FS 式逐列串行误差扩散（推理后处理，PITFALLS #32/#35/#42）
 halftone/losses.py   HVS 低频损失 + 孤立点惩罚（CMYK 联合掩码）
 halftone/data.py     数据加载（RgbCrops，灰度自动转 3 通道）
 data/images/         训练图

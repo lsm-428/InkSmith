@@ -11,15 +11,17 @@ Floyd–Steinberg 误差扩散流程。两条路线：
 
 | 路线 | 输入 | 输出 | 物理建模 | 状态 |
 |---|---|---|---|---|
-| **1-bit 灰度** `--printer film/paper` | 灰度图 | 1-bit 二值位图 | 可微打印模拟器（网点扩大预补偿） | 原型；film 线性物理下保真度赢不了 FS（PITFALLS #11），优势在 paper/exp 吸收模式 |
+| **1-bit 灰度** `--printer film/paper` | 灰度图 | 1-bit 二值位图 | 可微打印模拟器（网点扩大预补偿） | **已可用**：`--ed` 后处理 24.67dB，对 FS +5.19 / 对 GS +5.55，12/12 全胜 |
 | **CMYK 2-bit 全彩** `--cmyk` | sRGB 图 | 4 通道 × 4 档墨量 | ICC 标定 LUT256 + Neugebauer + Lab ΔE2000（无可微模拟器） | **已收敛、未达可用线**：photos_val 硬域 ΔE00 **8.92**，对 gs 工业 RIP **-21.54**（12/12 全胜） |
 
 ## 原理
 
 ```
 # 1-bit 路线
-灰度图 → U-Net → logits → STE 硬二值化 → 可微打印模拟器(高斯扩散+网点扩大)
-        → 模拟纸上效果 vs 目标图：L1 + HVS低频MSE + 孤立点惩罚 → 反传
+训练：灰度图 → U-Net → logits → STE 软/硬二值化 → 可微打印模拟器(高斯扩散+网点扩大)
+            → 模拟纸上效果 vs 目标图：L1 + HVS低频MSE + 孤立点惩罚 → 反传
+推理：logits → 硬阈值 或 ED-FS 串行误差扩散（--ed）→ 可打印位图
+      ★ 必须加 --ed：14.80dB → 24.67dB（对 FS +5.19，12/12 全胜）
 
 # CMYK 2-bit 路线
 sRGB → U-Net → 4通道×4档 logits → softmax(退火)/argmax(硬) → LUT256 查表
@@ -30,7 +32,8 @@ sRGB → U-Net → 4通道×4档 logits → softmax(退火)/argmax(硬) → LUT2
 - `halftone/printer.py` — 可微打印机模型（墨滴=高斯斑）。两套物理：`PrinterSimulator`
   （纸基吸收，exp 饱和）与 `FilmSimulator`（非吸收膜基 + 100% 固含，线性体积）
 - `halftone/cmyk.py` — 色彩层：ICC(FOGRA39L) 标定 LUT256 + Neugebauer 收缩 + sRGB↔Lab↔CMYK
-- `halftone/ed_fs.py` — FS 式逐行串行误差扩散。**推理后处理专用**（训练前向会发散，PITFALLS #33）
+- `halftone/ed_fs.py` — FS 式逐列串行误差扩散。**推理后处理专用**（训练前向会发散，PITFALLS #33）。
+  权重和必须严格为 1（右 7/16 + 右下 5/16 + 右上 3/16 + 右二 1/16），否则覆盖率两端塌陷（#42）
 - `halftone/losses.py` — HVS 低频匹配损失 + 孤立墨点/白洞惩罚（CMYK 四通道联合掩码）
 
 ## 用法
@@ -53,7 +56,8 @@ uv run python eval.py infer photo.jpg --ckpt runs/cmyk_sd/best.pt --out out/phot
 # 产出 out/photo_bitmap.png（0/1 打印位图）与 out/photo_preview.png（模拟纸上效果）
 
 # 三方对照（模型 vs Floyd–Steinberg vs Ghostscript 筛网）
-uv run python eval.py one photo.jpg --ckpt runs/onebit/best.pt
+uv run python eval.py one photo.jpg --ckpt runs/onebit/best.pt --ed   # --ed 必须加
+uv run python eval.py batch --ckpt runs/onebit/best.pt --ed           # 12 张：24.67 vs FS 19.48
 
 # CMYK 评测（ΔE00 + 四通道 inkcov；--rip 加工业 RIP 基线；--ed 加误差扩散后处理）
 uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk_sd/best.pt --rip
@@ -90,6 +94,6 @@ uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk_sd/best.pt --rip
 2. **网点扩大标定**（最大未开采优势）：`calib_target.py` 生成 256 块标定靶
    → 真机打印 → `--analyze` 实测 Lab 重建 LUT256 → 接进训练。NN 可把
    墨水/纸张偏差焊进损失反向补偿，RIP 结构上做不到；
-3. 用 `halftone/ed_fs.py` 的串行误差扩散修 1-bit 老路的条纹退化解
+3. ~~用 ed_fs 修 1-bit 条纹退化解~~ 已完成：`--ed` 后 14.80→24.67dB（PITFALLS #42）
    （PITFALLS #12/#13）；
 4. GCR（暗部偏好 K 墨）与通道去相关项。

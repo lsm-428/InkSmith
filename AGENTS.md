@@ -13,9 +13,11 @@ Python + PyTorch，无构建系统、无 CI、**无单元测试**。
 
 **当前状态**（2026-10-20）：CMYK 路线已训练收敛（未达可用线）——`runs/cmyk_sd/best.pt`（400 张
 Stable Diffusion 生成图训练）在 photos_val 硬域 ΔE00 **8.92**，对 gs 工业
-RIP **-21.54**（12/12 全胜）；距可用线 3.0 仍有 2.97 倍差距。1-bit 路线 film 线性
-物理下保真度赢不了 FS（PITFALLS #11），优势在 paper/exp 吸收模式的网点扩大
-预补偿。训练数据已从脚本合成升级为 AI 生成（PITFALLS #39/#40）。
+RIP **-21.54**（12/12 全胜）；距可用线 3.0 仍有 2.97 倍差距。1-bit 路线
+`runs/onebit/best.pt`：硬阈值 14.80dB（输 FS），**加 `--ed` 后 24.67dB，
+对 FS +5.19 / 对 GS +5.55，12/12 全胜**——逐像素硬阈值不是 1-bit 的正确
+用法，ED-FS 后处理才是（PITFALLS #11 修正 + #42）。
+训练数据已从脚本合成升级为 AI 生成（PITFALLS #39/#40）。
 
 ## 文档优先级（会冲突，按此顺序信）
 
@@ -81,8 +83,9 @@ uv run python calib_target.py --out out/dotgain   # 网点扩大标定靶（打�
   CMYK 路线同理：可信指标是 `evaluate_cmyk` / `eval.py cmyk` 的**硬 argmax
   ΔE2000**，train.log 里的 `de` 是软前向值。
 - 默认 ckpt 不一致：`eval.py infer` 默认 `last.pt`，`one`/`batch` 默认 `best.pt`。
-- 验收别默认"赢 FS"：线性物理（film）下 FS 接近最优，NN 保真度赢不了是预期结论，
-  不是 bug（PITFALLS #11）。FS/GS 基线用于对照，不是必须击败的目标。
+- **1-bit 验收必须加 `--ed`**：硬阈值的逐像素决策在 film 下赢不了 FS
+  （14.80 vs 19.48，PITFALLS #11）；ED-FS 后处理后 24.67dB、对 FS +5.19、
+  12/12 全胜。不带 `--ed` 的 1-bit 数字不代表这条路线的最好水平。
 
 ## 架构
 
@@ -102,7 +105,7 @@ halftone/model.py     U-Net + soft_binarize/hard_binarize(1-bit) + soft_levels/h
 halftone/printer.py   PrinterSimulator(paper，exp 吸收=饱和区) / FilmSimulator(film，线性体积)
                       由 build_printer(ckpt["args"]) 按 "printer" 字段选（CMYK 路线不用）
 halftone/cmyk.py      色彩层：LUT16/LUT256（ICC 标定）+ Neugebauer 收缩 + sRGB↔Lab↔CMYK
-halftone/ed_fs.py     FS 式逐行串行误差扩散（**推理后处理专用**，训练前向会发散 PITFALLS #33）
+halftone/ed_fs.py     FS 式逐列串行误差扩散（**推理后处理专用**，训练前向会发散 PITFALLS #33）
 halftone/losses.py    HVS 低频损失 + 孤立点惩罚（CMYK 联合掩码）；halftone/data.py 数据加载
 ```
 
@@ -120,7 +123,8 @@ halftone/losses.py    HVS 低频损失 + 孤立点惩罚（CMYK 联合掩码）�
 
 1. **禁止 `--hard-ste` 从零训练**：必死（flatness degradation），只能退火后微调。
 2. **打印模糊 σ 必须 ≳ 1.4px**：12.5µm@1440dpi=0.71px 会让退火全程躺平；
-   已验证配方是 `--sigma-um 25 --dpi 1440`（≈1.42px，硬 STE 后 20.98dB）。
+   已验证配方是 `--sigma-um 25 --dpi 1440`（≈1.42px）。**推理必须加 `--ed`**
+   （ED-FS 后处理，见铁律 #6 与 PITFALLS #42）：硬阈值 14.80dB → ed_fs 24.67dB。
 3. **基线先数值自检**：PIL `convert("1")` 是 bool 数组，除 255 会伪造假胜利（PITFALLS #6）。
 4. 每次只改一个变量；先做数值诊断（psnr/覆盖率/张量均值），不要靠肉眼读图调参。
 5. **跟 gs RIP 比彩色，必须先让 gs 用同一个 ICC 分离**：直接 `tiffsep1` 渲
@@ -129,8 +133,9 @@ halftone/losses.py    HVS 低频损失 + 孤立点惩罚（CMYK 联合掩码）�
    PIL `ImageCms` 先分离成 CMYK PDF 再让 gs 只做半色调。见 PITFALLS #18。
 6. **模型可能用水平条纹代替像素级抖动**：灰度尺上 PSNR 会低 13dB 且呈 S 形。
    判据是位图**行墨量 std**（`eval.py wedge` 输出）：>0.05 即条纹退化解，
-   FS 参照 <0.01。详见 PITFALLS #12。**注意：目前所有尝试过的条纹惩罚指标都会
-   误伤真实低频内容，别轻易加正则，见 PITFALLS #12 的"已排除"清单。**
+   FS 参照 <0.01。详见 PITFALLS #12。条纹退化解**已由 `--ed` 修复**
+   （行墨量 std 0.157→0.024），不要靠加正则治——试过的指标全部误伤真实低频，
+   见 PITFALLS #12 的"已排除"清单。
 7. **CMYK 多档必须有 `w_cov`**：只优化 Lab ΔE 时网络会找跨通道替身
    （K 1/3 落成 C 档 2，ΔE 10.4），软期望与硬 argmax 是两个目标。PITFALLS #17。
 8. **自定义 loss 先用全零输入跑 backward**：CIEDE2000 在 a=b=0 处有 4 个
