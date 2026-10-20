@@ -57,7 +57,6 @@ uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk/best.pt --ed --rip  
 
 # === 其他 ===
 uv run python webapp.py                 # 网页版对照，单图/多图上传，默认 8123
-                                      # ckpt 类型自动判断：CMYK ckpt -> 全彩页（ΔE00 + RIP + 四通道）
 uv run python gen_data.py --n 500       # 生成合成训练图
 uv run python calc_sigma.py             # σ 出处计算
 uv run python calib_target.py --out out/dotgain   # 网点扩大标定靶（打印后用 --analyze）
