@@ -123,7 +123,9 @@ def main():
     rng = random.Random(args.seed)
     ok = fail = 0
     t_start = time.time()
-    idx = 0
+    # 从已有文件数接着编号，避免重跑时覆盖（seed 不同也会从 0 开始）。
+    idx = len(list(out.glob("ai_*.png")))
+    print(f"[resume] 目录已有 {idx} 张，从 ai_{idx:04d} 继续", flush=True)
     while ok < args.n:
         seed = rng.randrange(2 ** 31)
         prompt = build_prompt(rng)
