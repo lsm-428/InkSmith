@@ -54,8 +54,9 @@ uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/onebit
 # CMYK 正式训练（注意 --batch 4：256 组合张量链显存峰值高，batch 16 会爆）
 uv run python train.py --cmyk --batch 4 --data data/images_ai --out runs/cmyk_sd
 
-# 推理：出打印位图 + 模拟预览
-uv run python eval.py infer photo.jpg --ckpt runs/cmyk_sd/best.pt --out out/photo
+# 推理：出打印位图 + 模拟预览（--ed 必须加；infer 只支持 1-bit ckpt，
+# CMYK ckpt 会因通道数不匹配报错——CMYK 位图/预览用 eval.py cmyk 产出）
+uv run python eval.py infer photo.jpg --ckpt runs/onebit/best.pt --ed --out out/photo
 # 产出 out/photo_bitmap.png（0/1 打印位图）与 out/photo_preview.png（模拟纸上效果）
 
 # 三方对照（模型 vs Floyd–Steinberg vs Ghostscript 筛网）

@@ -210,41 +210,6 @@ def delta_e_2000(lab1, lab2):
     return torch.sqrt((dLp / (kL * SL)) ** 2 + (dCp / (kC * SC)) ** 2
                       + (dHp / (kH * SH)) ** 2
                       + RT * (dCp / (kC * SC)) * (dHp / (kH * SH)) + eps)
-    """验证集硬阈值指标：psnr（模拟打印 vs 目标）、孤立点率、明暗偏差。
-
-    这是唯一可信的指标（PITFALLS #4、#14）。注意 train.log 里退火轮记的
-    psnr 是**软前向**口径（T=0.03 时 ink 仍是 0.05~0.95 的软值），
-    与这里的硬阈值口径能差 20dB，两者不可直接比较。
-    seed 固定验证集的随机裁剪/翻转：否则同 ckpt 两次评测能差 3dB 以上，
-    pipeline 里"psnr 是否上涨"的逐轮策略会被噪声牵着走（PITFALLS #12）。
-    """
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    a = ckpt["args"]
-    model = UNet(base=a["base"], up=a.get("up", "nearest")).to(device)
-    model.load_state_dict(ckpt["model"])
-    model.eval()
-    printer = build_printer(a).to(device)
-    ds = RgbCrops("data/val", size=size, length=n_val)
-    k = torch.ones(1, 1, 3, 3, device=device)
-    psnrs, isos, biases = [], [], []
-    # 固定裁剪/翻转随机源；只影响验证，不碰训练用的全局 random 状态
-    rng = random.Random(seed)
-    state = random.getstate()
-    random.setstate((state[0], tuple(rng.getstate()[1]), state[2]))
-    with torch.no_grad():
-        for i in range(len(ds)):
-            t = ds[i][None].to(device)
-            ink = (model(t) > 0).float()
-            printed = printer(ink)
-            mse = F.mse_loss(printed, t).item()
-            psnrs.append(10 * np.log10(1.0 / (mse + 1e-12)))
-            neighbors = F.conv2d(ink, k, padding=1) - ink
-            isos.append((ink * (neighbors < 0.5)).sum().item()
-                        / (ink.sum().item() + 1e-9))
-            biases.append((printed.mean() - t.mean()).item())
-    random.setstate(state)
-    return {"psnr": float(np.mean(psnrs)), "iso_ratio": float(np.mean(isos)),
-            "bias": float(np.mean(biases))}
 
 
 # ---------------------------------------------------------------- 单段训练
@@ -301,8 +266,8 @@ def train_once(args, device, out, log, *, epochs, lr, w_iso, w_bin,
 
     for epoch in range(1, epochs + 1):
         model.train()
-        totals = {"loss": 0.0, "l1": 0.0, "hvs": 0.0, "iso": 0.0,
-                  "stripe": 0.0, "psnr": 0.0, "de": 0.0}
+        totals = {"loss": 0.0, "l1": 0.0, "hvs": 0.0, "cov": 0.0, "iso": 0.0,
+                  "stripe": 0.0, "tac": 0.0, "psnr": 0.0, "de": 0.0}
         n = 0
         # 温度线性退火：早期软（学覆盖率），后期硬（结晶出抖动纹理）
         temp = t_start + (t_end - t_start) * (epoch - 1) / max(1, epochs - 1)
@@ -388,14 +353,14 @@ def train_once(args, device, out, log, *, epochs, lr, w_iso, w_bin,
                 l_gap = F.relu(cmyk.get("gap_min", 0.5) - gap).mean()
                 l_bin = l_gap
                 loss = (cmyk["w_lab"] * l_lab + cmyk["w_cov"] * l_cov
-                        + cmyk["w_tac"] * l_tac + args.w_iso * l_iso
-                        + args.w_bin * l_bin)
+                        + cmyk["w_tac"] * l_tac + w_iso * l_iso
+                        + w_bin * l_bin)
                 b = target.shape[0]
                 totals["loss"] += loss.item() * b
                 totals["de"] += l_lab.item() * b
-                totals["hvs"] += l_cov.item() * b
+                totals["cov"] += l_cov.item() * b
                 totals["iso"] += l_iso.item() * b
-                totals["stripe"] += l_tac.item() * b
+                totals["tac"] += l_tac.item() * b
                 n += b
                 opt.zero_grad(); loss.backward(); opt.step()
                 continue
@@ -422,8 +387,8 @@ def train_once(args, device, out, log, *, epochs, lr, w_iso, w_bin,
             l_ink = ink.mean()
             l_bin = (ink * (1 - ink)).mean()
             l_stripe = striping_penalty(ink)
-            loss = (l1 + args.w_hvs * l_hvs + args.w_iso * l_iso
-                    + args.w_ink * l_ink + args.w_bin * l_bin
+            loss = (l1 + args.w_hvs * l_hvs + w_iso * l_iso
+                    + args.w_ink * l_ink + w_bin * l_bin
                     + args.w_stripe * l_stripe)
 
             opt.zero_grad()
@@ -630,7 +595,9 @@ def main():
         t_hi = max(t_floor, 1.0 * 0.3 ** (rnd - 1))
         t_lo = max(t_floor, t_hi * 0.3)
         w_bin = 0.05 * rnd  # 二值化惩罚随退火逐步加强
-        args.w_iso, args.lr = hp["w_iso"], hp["lr"]
+        # w_iso/w_bin 一律经 train_once 形参传入（PITFALLS #47：曾长期被
+        # args.w_iso/args.w_bin 在函数体内覆盖，逐轮加强从未生效）
+        args.lr = hp["lr"]
         log(f"\n===== 第 {rnd}/{args.rounds} 轮 | {hp} | T {t_hi:.2f}->{t_lo:.2f} "
             f"| w_bin={w_bin:.2f} =====")
         train_once(args, device, out, log, epochs=args.epochs_per_round,
@@ -697,7 +664,7 @@ def main():
             "要强行启用加 --cmyk-finetune")
     else:
         for ft in range(1, args.finetune_rounds + 1):
-            args.w_iso, args.lr = hp["w_iso"], hp["lr"] / 2
+            args.lr = hp["lr"] / 2
             log(f"\n===== 硬 STE 微调 {ft}/{args.finetune_rounds} | {hp} lr={hp['lr']/2} =====")
             train_once(args, device, out, log, epochs=args.finetune_epochs,
                        lr=hp["lr"] / 2, w_iso=hp["w_iso"], w_bin=0.2,

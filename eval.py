@@ -585,19 +585,23 @@ def cmd_cmyk(args):
                                   [0.0193, 0.1192, 0.9505]],
                                  device=device)
         oog = (xyz.sum(-1) > 1.0).float().mean().item() * 100
-        # 落盘四通道位图 + inkcov 审计
+        # 落盘四通道位图。字节语义为**墨量**（0=无墨=白，255=满墨）。
+        # ⚠ 本环境(PIL 12.3 + gs 10.05.1)的 CMYK PDF 走 DCTDecode +
+        # /Decode[1 0]，gs 对字节的解释与 #37 旧 PIL 时代的结论**相反**：
+        # 写无墨量(255=无墨)会把白纸渲成全黑、inkcov 读满墨。字节语义
+        # 必须逐环境用端点块实测（全墨渲黑/全白渲白），不能沿用结论
+        # （PITFALLS #48）。本轮实测：墨量字节下 四通道单调、全墨0.000/
+        # 全白1.000，正确。
         cov_np = cov[0].cpu().numpy()
-        chans = [Image.fromarray((cov_np[c] * 255).astype(np.uint8), "L")
-                 for c in range(4)]
+        ink_bytes = np.round(cov_np * 255).astype(np.uint8)
+        chans = [Image.fromarray(ink_bytes[c], "L") for c in range(4)]
         merged = Image.merge("CMYK", chans)
         pdf = outdir / f"{f.stem}_cmyk.pdf"
         merged.save(pdf, "PDF", resolution=72)
-        ink_covs = gs_inkcov(str(pdf))
-        if all(c == c for c in ink_covs):
-            ink_str = " ".join(f"{c:.3f}" for c in ink_covs)
-            gs_cov = float(np.mean(ink_covs))
-        else:
-            ink_str, gs_cov = "inkcov 失败", cov_np.mean()
+        # gs inkcov 量的是「有墨像素占比」，对任何非零平均覆盖率都饱和到
+        # ~1.0（DCTDecode+Decode 反相链），不能当平均墨量读（PITFALLS #48）。
+        # 张量自检值才是平均覆盖率，直接替换该列。
+        gs_cov = float(cov_np.mean())
         tac = cov.sum(1).mean().item()
         rows.append({"de": de.mean().item(), "de95": de95,
                      "de_px": de_px, "gs_cov": gs_cov, "tac": tac,
@@ -623,7 +627,7 @@ def cmd_cmyk(args):
     tac_m = float(np.mean([r["tac"] for r in rows]))
     px_m = float(np.mean([r["de_px"] for r in rows]))
     print(f"\n均值 ΔE00 {de_m:.2f}（σ={args.lp:g}px 视觉口径）| p95 {de95_m:.2f} "
-          f"| TAC {tac_m:.2f} | gs 覆盖率 "
+          f"| TAC {tac_m:.2f} | 平均覆盖率 "
           f"{np.mean([r['gs_cov'] for r in rows]):.3f}")
     if args.lp and args.lp > 0:
         print(f"    逐像素口径（诊断用，勿作结论）ΔE00 {px_m:.2f}")
@@ -669,7 +673,8 @@ def main():
                         help="film 模式：按此 dpi 评估（默认 ckpt 里的）")
         sp.add_argument("--ed", action="store_true",
                         help="推理走 ED-FS 误差扩散后处理。1-bit：修 PITFALLS "
-                             "#12/#13 条纹退化解（实测 14.80->23.35dB，12/12 胜 FS）；"
+                             "#12/#13 条纹退化解（实测 14.80->24.67dB，仍差 FS "
+                             "25.82 共 1.15，12/12 全输，见 #43/#45）；"
                              "CMYK：多样性提升（#35/#39，是否有利看权重）")
         return sp
 

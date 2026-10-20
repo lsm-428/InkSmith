@@ -166,6 +166,10 @@ uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk_sd/best.pt --rip
 uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk_sd/best.pt --ed --rip
 ```
 
+⚠ CMYK 打印位图 PDF 由 `eval.py cmyk` 落盘（`out/cmyk/<名>_cmyk.pdf`），
+字节语义为**墨量**（0=无墨），见 PITFALLS #48——该语义随 PIL/gs 版本变过，
+换环境必须重跑端点块自检（全墨渲黑/全白渲白）。
+
 **注意 `--batch 4`**：CMYK 的 256 组合张量链显存峰值远高于 1-bit，
 batch 16×256² 会 `CUBLAS_STATUS_ALLOC_FAILED`（PITFALLS #20）。
 

@@ -104,7 +104,8 @@ eval.py         评测+诊断八合一（共用 triplet 跑三条路线）：
                 wedge(灰度尺/条纹) | data(数据集) | norm(架构) | compare(双ckpt) |
                 cmyk(CMYK ΔE00 + 四通道 inkcov；--rip 加 gs 工业 RIP 基线；
                      --ed 加 ED-FS 误差扩散后处理)
-webapp.py       网页版对照服务（import eval.triplet 复用评测核心）
+webapp.py       网页版对照服务（灰度三条路线 import eval.triplet 复用；CMYK 全彩页
+                /api/cmyk 与 eval.py cmyk 同口径，2026-10-21 从回退事故中恢复）
 gen_data.py     合成训练图（--rgb 彩色，--icc 走 ICC 分离，--sat/--gamma 照片化分布）
                 calib_target.py 网点扩大标定靶（256 块 4 档全组合 PDF + 扫描分析）
 halftone/model.py     U-Net + soft_binarize/hard_binarize(1-bit) + soft_levels/hard_levels(多档)
