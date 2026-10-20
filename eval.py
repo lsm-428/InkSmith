@@ -64,13 +64,23 @@ def load_model_and_printer(ckpt_path, dpi=None, device=None):
 
 
 def film_target_and_base(img, film, device):
-    """灰度图 -> pad(8 倍数, reflect) 后的 target；film 时同时返回反相 FS/GS 输入。"""
+    """灰度图 -> pad(8 倍数, reflect) 后的 target；film 时同时返回反相 FS/GS 输入。
+
+    **base 必须用与 target 完全相同的 reflect 补边，不能靠 resize**（PITFALLS #43）：
+    resize 把 481 宽拉成 488（1.4% 非等比缩放），内容相对 target 整体错位，
+    实测反相图与 target 偏差均值 0.0198、最大 0.58；同一 FS 算法喂这张错位图
+    凭空掉 6.1dB（25.34 vs 31.45），「赢 FS」的假象就是这么来的。
+    补边后 base.size == target 尺寸，下游 `resize(size)` 退化为 no-op。
+    """
     w, h = img.size
     pw, ph = (8 - w % 8) % 8, (8 - h % 8) % 8
     arr = np.asarray(img, dtype=np.float32) / 255.0
     t = torch.from_numpy(arr)[None, None].to(device)
     t = F.pad(t, (0, pw, 0, ph), mode="reflect")
-    base = Image.eval(img, lambda p: 255 - p) if film else img
+    base_arr = t[0, 0].cpu().numpy()
+    if film:
+        base_arr = 1.0 - base_arr      # 灰度=膜厚（暗=多墨），基线要吃「墨量」
+    base = Image.fromarray((base_arr * 255.0).round().clip(0, 255).astype(np.uint8), "L")
     return t, base
 
 
@@ -467,6 +477,33 @@ def cmd_compare(args):
 
 # ---------------------------------------------------------------- cmyk
 
+def lp_blur(x, sig):
+    """对 (1,C,H,W) 做 Gaussian 低通（逐通道），σ 单位 px。σ<=0 原样返回。"""
+    if not sig or sig <= 0:
+        return x
+    r = max(1, int(3 * sig) + 1)
+    xs = torch.arange(-r, r + 1, dtype=torch.float32, device=x.device)
+    k = torch.exp(-xs ** 2 / (2 * sig * sig))
+    k = k / k.sum()
+    k2 = (k[:, None] @ k[None, :])[None, None]
+    C = x.shape[1]
+    return F.conv2d(x.reshape(-1, 1, x.shape[2], x.shape[3]), k2,
+                    padding=k2.shape[-1] // 2).reshape(
+                        x.shape[0], C, x.shape[2], x.shape[3])
+
+
+def delta_e_visual(lab_a, lab_b, lp):
+    """视觉口径 ΔE00：先低通再算（PITFALLS #44）。
+
+    逐像素 ΔE00 对半色调是**错误口径**：半色调的全部设计就是把量化误差推到
+    人眼不敏感的高频，逐像素比等于惩罚 dithering 本身。实测 8 张 photos_val
+    σ 扫描（NN vs gs RIP）：σ=0 → NN +18.97 领先；σ=0.5 → +7.09；
+    **σ=1 → +0.22（持平）；σ=2 → -0.25（RIP 略好）**；σ=3/4 → -0.20/-0.13。
+    即「NN 碾压 RIP」完全是逐像素口径的产物，在眼睛/打印模糊的尺度上两者同级。
+    """
+    return delta_e_2000(lp_blur(lab_a, lp), lp_blur(lab_b, lp))
+
+
 def cmd_cmyk(args):
     """CMYK 多档路线评测：硬域 Lab ΔE + 四通道 inkcov 审计 + RIP 基线对照。"""
     from halftone.data import RgbCrops
@@ -496,6 +533,10 @@ def cmd_cmyk(args):
         arr = np.asarray(rgb, dtype=np.float32) / 255.0
         t = torch.from_numpy(arr).permute(2, 0, 1)[None].to(device)
         t = F.pad(t, (0, pw, 0, ph), mode="reflect")
+        # 补边后的 RGB（8bit），供 RIP 基线用——必须与 target 同几何
+        padded_rgb = Image.fromarray(
+            (t[0].permute(1, 2, 0).cpu().numpy() * 255.0).round()
+            .clip(0, 255).astype(np.uint8), "RGB")
         lab_tg = srgb_to_lab(t.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         with torch.no_grad():
             logits = model(t)
@@ -510,10 +551,15 @@ def cmd_cmyk(args):
                 hard = hard_levels(logits / 0.01)
             cov = (hard * LEVELS.view(1, 1, 1, 4).to(device)).sum(-1)
             lab_nn = neugebauer_lab_2bit(hard, lut256)
-            de = delta_e_2000(lab_nn, lab_tg)
+            # 视觉口径（--lp 默认 2px）；--lp 0 时退化为逐像素
+            de = delta_e_visual(lab_nn, lab_tg, args.lp)
             de95 = torch.quantile(de.flatten(), 0.95).item()
+            de_px = delta_e_2000(lab_nn, lab_tg).mean().item()  # 仅供原始读数
         # RIP 基线：同 ICC 分离 + gs 半色调（1-bit 四通道）
-        rip = rip_cmyk(rgb, icc, intent) if args.rip else None
+        # ⚠ 必须喂**补边后**的图（PITFALLS #43）：直接 rip 原图再 interpolate
+        # 拉伸会给 RIP 加 1.4% 非等比缩放，实测把 RIP 抬差 1.74 ΔE00
+        # （30.22 vs 28.48），是白送 NN 的分数。
+        rip = rip_cmyk(padded_rgb, icc, intent) if args.rip else None
         if rip is not None:
             rip_t = torch.from_numpy(rip).unsqueeze(0).to(device)
             if rip_t.shape[-2:] != (t.shape[2], t.shape[3]):
@@ -521,7 +567,8 @@ def cmd_cmyk(args):
                                       mode="nearest")
             lab_rip = neugebauer_lab_2bit(
                 one_hot_from_cov(rip_t), lut256)
-            de_rip = delta_e_2000(lab_rip, lab_tg).mean().item()
+            de_rip = delta_e_visual(lab_rip, lab_tg, args.lp).mean().item()
+            rip_px = delta_e_2000(lab_rip, lab_tg).mean().item()
             rip_k = float(rip[3].mean())
         else:
             de_rip, rip_k = float("nan"), float("nan")
@@ -549,7 +596,7 @@ def cmd_cmyk(args):
             ink_str, gs_cov = "inkcov 失败", cov_np.mean()
         tac = cov.sum(1).mean().item()
         rows.append({"de": de.mean().item(), "de95": de95,
-                     "gs_cov": gs_cov, "tac": tac,
+                     "de_px": de_px, "gs_cov": gs_cov, "tac": tac,
                      "de_rip": de_rip, "rip_k": rip_k})
         print(f"{f.stem[:12]:>12} {de.mean().item():7.2f} {de_rip:7.2f} "
               f"{de_rip - de.mean().item():+6.2f} | "
@@ -570,13 +617,17 @@ def cmd_cmyk(args):
     de_m = float(np.mean([r["de"] for r in rows]))
     de95_m = float(np.mean([r["de95"] for r in rows]))
     tac_m = float(np.mean([r["tac"] for r in rows]))
-    print(f"\n均值 ΔE00 {de_m:.2f} | p95 {de95_m:.2f} | TAC {tac_m:.2f} "
-          f"| gs 覆盖率 {np.mean([r['gs_cov'] for r in rows]):.3f}")
+    px_m = float(np.mean([r["de_px"] for r in rows]))
+    print(f"\n均值 ΔE00 {de_m:.2f}（σ={args.lp:g}px 视觉口径）| p95 {de95_m:.2f} "
+          f"| TAC {tac_m:.2f} | gs 覆盖率 "
+          f"{np.mean([r['gs_cov'] for r in rows]):.3f}")
+    if args.lp and args.lp > 0:
+        print(f"    逐像素口径（诊断用，勿作结论）ΔE00 {px_m:.2f}")
     if any(r["de_rip"] == r["de_rip"] for r in rows):
         rip_m = float(np.nanmean([r["de_rip"] for r in rows]))
         print(f"RIP 基线（同 ICC 分离 + gs 半色调）ΔE00 {rip_m:.2f} | "
-              f"NN - RIP = {de_m - rip_m:+.2f}")
-        print("判读：ΔE00 差 <1 说明 NN 已达工业半色调水平；正数=NN 更好。")
+              f"NN - RIP = {de_m - rip_m:+.2f}（负=NN 更好，同一视觉口径）")
+        print("判读：ΔE00 差 <1 说明 NN 已达工业半色调水平。")
     print(f"位图/预览：{outdir}/<名>_cmyk.pdf / _cmyk.png "
           f"（PDF 行= C M Y K 四通道）")
     print("判读：ΔE00 < 3 可用；TAC 应 <= 3.2；OOG% 高说明训练集缺极端色相。")
@@ -646,6 +697,10 @@ def main():
     k.add_argument("--out", default="out/cmyk")
     k.add_argument("--rip", action="store_true",
                    help="加一列 ghostscript RIP 基线（同 ICC 分离 + tiffsep1 半色调）")
+    k.add_argument("--lp", type=float, default=2.0,
+                   help="低通 σ(px)，视觉口径 ΔE；0=关（逐像素，仅供诊断）。"
+                        "半色调把误差推给人眼不敏感的高频，逐像素 ΔE 等于"
+                        "把 dithering 当错误（PITFALLS #44）")
     # --ed 已由 ckpt_arg 提供（1-bit 与 CMYK 共用同一个开关）
     k.set_defaults(func=cmd_cmyk)
 
