@@ -11,9 +11,9 @@ Floyd–Steinberg 误差扩散。两条路线并存：
 
 Python + PyTorch，无构建系统、无 CI、**无单元测试**。
 
-**当前状态**（2026-10-20）：CMYK 路线已收敛——`runs/cmyk_sd/best.pt`（400 张
+**当前状态**（2026-10-20）：CMYK 路线已训练收敛（未达可用线）——`runs/cmyk_sd/best.pt`（400 张
 Stable Diffusion 生成图训练）在 photos_val 硬域 ΔE00 **8.92**，对 gs 工业
-RIP **-21.54**（12/12 全胜）；距可用线 3.0 仍差 3.0 倍。1-bit 路线 film 线性
+RIP **-21.54**（12/12 全胜）；距可用线 3.0 仍有 2.97 倍差距。1-bit 路线 film 线性
 物理下保真度赢不了 FS（PITFALLS #11），优势在 paper/exp 吸收模式的网点扩大
 预补偿。训练数据已从脚本合成升级为 AI 生成（PITFALLS #39/#40）。
 
@@ -28,34 +28,38 @@ PITFALLS #11 推翻（线性物理下无收益，单 dpi 训练即可）——�
 
 ## 命令（一律 `uv run`，工作目录 = 仓库根）
 
-根目录只有 4 个入口：**训练 train.py / 评测+诊断 eval.py / 网页 webapp.py**（+2 个工具）。
+根目录 7 个脚本，3 个主入口 + 4 个工具：
+**train.py**（训练）/ **eval.py**（评测+诊断）/ **webapp.py**（网页）；
+**gen_data.py**（脚本合成数据）/ **gen_ai.py**（SD 生成数据）/
+**calib_target.py**（网点扩大标定靶）/ **calc_sigma.py**（σ 计算）。
 
 ```bash
 uv sync                       # 装环境（torch 2.7.1+cu118，pyproject 钉死版本）
 
 # === 训练（train.py 默认就是自动编排：退火多轮 -> 硬 STE 微调）===
-uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/film
+uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/onebit
 uv run python train.py --smoke     # ~10 秒冒烟；改代码后先跑这个
 uv run python train.py --rounds 1 --epochs 20 --hard-ste ...  # 手工单段（默认自动，一般不用）
 
 # === CMYK 2-bit 全彩路线（阶段 5；无可微打印模拟器，损失=Lab ΔE2000）===
 uv run python gen_data.py --n 800 --rgb --icc /usr/share/color/icc/colord/FOGRA39L_coated.icc \
     --cmyk-frac 0.15 --sat 0.6 --gamma 1.4 --size 512   # 照片化分布
-uv run python train.py --cmyk --batch 4 --out runs/cmyk # 默认 w_cov 0.3/w_tac 1.0/tac_max 3.2
+uv run python train.py --cmyk --batch 4 --data data/images_ai --out runs/cmyk_sd
+                                                  # 默认 w_cov 0.3/w_tac 1.0/tac_max 3.2
 uv run python train.py --smoke --cmyk             # 冒烟（约 10 秒，1 epoch）
 # 注意 --batch 4：CMYK 256 组合张量链显存峰值远高于 1-bit，batch 16 会爆显存
 
 # === eval.py：评测 3 个 + 诊断 4 个子命令 ===
-uv run python eval.py one   图.jpg --ckpt runs/film/best.pt   # 单图三方对照 + inkcov 审计
-uv run python eval.py batch          --ckpt runs/film/best.pt   # 批量，默认 data/photos_val
-uv run python eval.py infer 图.jpg   --ckpt runs/film/last.pt   # 出打印位图+预览
-uv run python eval.py wedge --ckpt runs/film/best.pt   # 灰度尺分段偏差 + 条纹检测（改配方前必跑）
+uv run python eval.py one   图.jpg --ckpt runs/onebit/best.pt   # 单图三方对照 + inkcov 审计
+uv run python eval.py batch          --ckpt runs/onebit/best.pt   # 批量，默认 data/photos_val
+uv run python eval.py infer 图.jpg   --ckpt runs/onebit/last.pt   # 出打印位图+预览
+uv run python eval.py wedge --ckpt runs/onebit/best.pt   # 灰度尺分段偏差 + 条纹检测（改配方前必跑）
 uv run python eval.py data        # 训练集平坦区/灰阶分布
 uv run python eval.py norm        # 网络能否区分绝对灰阶
 uv run python eval.py compare --a A.pt --b B.pt        # 两 ckpt 逐一对比
-uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk/best.pt   # CMYK：ΔE00+四通道 inkcov
-uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk/best.pt --rip   # 再加 gs RIP 基线
-uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk/best.pt --ed --rip  # + ED-FS 后处理
+uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk_sd/best.pt   # CMYK：ΔE00+四通道 inkcov
+uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk_sd/best.pt --rip   # 再加 gs RIP 基线
+uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk_sd/best.pt --ed --rip  # + ED-FS 后处理
 
 # === 其他 ===
 uv run python webapp.py                 # 网页版对照，单图/多图上传，默认 8123
@@ -154,16 +158,14 @@ halftone/losses.py    HVS 低频损失 + 孤立点惩罚（CMYK 联合掩码）�
 - 数据/产物目录：训练图 `data/images/`，验证集 `data/val/`（种子 123 固定 30 张，
   **勿混入训练集**；丢失可重建 `uv run python gen_data.py --n 30 --seed 123 --out data/val`），
   权重 `runs/<实验名>/`，推理产物 `out/`；`data/`、`runs/`、`out/`、`.venv/` 都在 .gitignore 里。
-- **CMYK 路线的彩色训练数据**：`data/images/` 是灰度图，`--cmyk` 训练前先
-  `gen_data.py --rgb --icc <FOGRA39L>` 生成彩色图覆盖过去（`data/images/` 无备份）。
-- **GPU 驱动故障时的兜底**：`torch.cuda.is_available()=False` 时代码自动用 CPU，
-  但 `--cmyk` 一次迭代 ~11 s（256² batch 2），只能跑冒烟；`uv` 缓存锁冲突时
-  直接用 `.venv/bin/python`（不用 `uv run`）。
+- **CMYK 路线的彩色训练数据**：`data/images/`（800 张脚本合成 RGB）与
+  `data/images_ai/`（1000 张 SD 生成）都是 RGB，`--cmyk` 直接用。
+  SD 图是主数据源（ΔE00 低 18%，PITFALLS #39）。
+- `uv` 缓存锁冲突时直接用 `.venv/bin/python`（不用 `uv run`）。
 - **CMYK 默认跳过硬 STE 微调**：多档下它会毁掉退火成果（ΔE 6.38→42.04，
   覆盖率 0.336→0.562，PITFALLS #19）。best.pt 来自退火末态而非 finetune 后。
   要强行启用加 `--cmyk-finetune`。1-bit 老路不受影响（`--hard-ste` 仍照旧）。
 - `train.py --data` 目录为空时会悄悄用合成图冒烟——正式训练前确认 `data/images/` 非空。
-- 当前工作区含多处未提交修改/未跟踪文件，动之前先 `git status --short` 确认再说（提交后可删此行）。
 - `calc_sigma.py` 读仓库外的 `../InteractivePrintingSimulator/printheads.json`
   （本机存在）；换机器会缺文件。
 - ghostscript 不吃 PNG 输入，墨量审计前需 PIL 包成 PDF（`eval.py one` 已处理）。
@@ -174,7 +176,7 @@ halftone/losses.py    HVS 低频损失 + 孤立点惩罚（CMYK 联合掩码）�
 - RIP ΔE 是**保守下界**：RIP 位图要过 LUT256 得量化到 4 档（`one_hot_from_cov`），
   丢掉了网点大小承载的亚像素覆盖率信息。真实 RIP 比这个数更好。
 
-# === AI 生成训练图（Stable Diffusion，替代脚本合成，见 PITFALLS #22）===
+## 数据生成：AI 生成训练图（Stable Diffusion，替代脚本合成，见 PITFALLS #22）
 uv run python gen_ai.py --n 2 --steps 15 --dry-run     # 小批试跑（不落盘）
 uv run python gen_ai.py --n 400 --steps 20 --size 512 --out data/images_ai
 uv run python gen_ai.py --n 100 --init data/images --strength 0.55  # 图生图

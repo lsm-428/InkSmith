@@ -12,7 +12,7 @@ Floyd–Steinberg 误差扩散流程。两条路线：
 | 路线 | 输入 | 输出 | 物理建模 | 状态 |
 |---|---|---|---|---|
 | **1-bit 灰度** `--printer film/paper` | 灰度图 | 1-bit 二值位图 | 可微打印模拟器（网点扩大预补偿） | 原型；film 线性物理下保真度赢不了 FS（PITFALLS #11），优势在 paper/exp 吸收模式 |
-| **CMYK 2-bit 全彩** `--cmyk` | sRGB 图 | 4 通道 × 4 档墨量 | ICC 标定 LUT256 + Neugebauer + Lab ΔE2000（无可微模拟器） | **已收敛**：photos_val 硬域 ΔE00 **8.92**，对 gs 工业 RIP **-21.54**（12/12 全胜） |
+| **CMYK 2-bit 全彩** `--cmyk` | sRGB 图 | 4 通道 × 4 档墨量 | ICC 标定 LUT256 + Neugebauer + Lab ΔE2000（无可微模拟器） | **已收敛、未达可用线**：photos_val 硬域 ΔE00 **8.92**，对 gs 工业 RIP **-21.54**（12/12 全胜） |
 
 ## 原理
 
@@ -43,20 +43,23 @@ uv run python train.py --smoke
 uv run python train.py --smoke --cmyk          # CMYK 路线冒烟
 
 # 1-bit 正式训练（默认自动编排：退火多轮 → 硬 STE 微调）
-uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/film
+uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/onebit
 
 # CMYK 正式训练（注意 --batch 4：256 组合张量链显存峰值高，batch 16 会爆）
-uv run python train.py --cmyk --batch 4 --out runs/cmyk
+uv run python train.py --cmyk --batch 4 --data data/images_ai --out runs/cmyk_sd
 
 # 推理：出打印位图 + 模拟预览
-uv run python eval.py infer photo.jpg --ckpt runs/film/last.pt --out out/photo
+uv run python eval.py infer photo.jpg --ckpt runs/cmyk_sd/best.pt --out out/photo
 # 产出 out/photo_bitmap.png（0/1 打印位图）与 out/photo_preview.png（模拟纸上效果）
 
 # 三方对照（模型 vs Floyd–Steinberg vs Ghostscript 筛网）
-uv run python eval.py one photo.jpg --ckpt runs/film/best.pt
+uv run python eval.py one photo.jpg --ckpt runs/onebit/best.pt
 
 # CMYK 评测（ΔE00 + 四通道 inkcov；--rip 加工业 RIP 基线；--ed 加误差扩散后处理）
-uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk/best.pt --rip
+uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk_sd/best.pt --rip
+
+# 仓库内现成权重：runs/cmyk_sd/best.pt（ΔE00 8.92）、runs/keep/cmyk_v4_best.pt（10.85）
+# 1-bit 权重需自己训（旧实验已清理）
 ```
 
 完整命令与架构见 [AGENTS.md](AGENTS.md)；分阶段操作手册见 [WORKFLOW.md](WORKFLOW.md)，
@@ -75,17 +78,18 @@ uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk/best.pt --rip
 已完成：
 
 1. ~~2-bit 四档墨滴~~ → 已并入 CMYK 路线（`--levels 4`）；
-2. ~~CMYK 四通道 + 套印模型~~ → **已实现并收敛**：`--cmyk` 走 ICC 标定
+2. ~~CMYK 四通道 + 套印模型~~ → **已实现、训练已收敛（ΔE00 8.92，目标 3.0）**：`--cmyk` 走 ICC 标定
    （FOGRA39L）+ LUT256 Neugebauer + Lab ΔE2000，`runs/cmyk_sd/best.pt`
    在 photos_val 上硬域 ΔE00 **8.92**，对 gs 工业 RIP **-21.54**（12/12 全胜，
    同 ICC 分离只比半色调算法）。详见 `WORKFLOW.md` 阶段 5。
 
 下一步（按优先级）：
 
-1. **网点扩大标定**（最大未开采优势）：`calib_target.py` 生成 256 块标定靶
+1. **把 ΔE00 从 8.92 压到 3.0 可用线**：扩 SD 训练图量（当前 1000 张）、
+   调训练配方；
+2. **网点扩大标定**（最大未开采优势）：`calib_target.py` 生成 256 块标定靶
    → 真机打印 → `--analyze` 实测 Lab 重建 LUT256 → 接进训练。NN 可把
    墨水/纸张偏差焊进损失反向补偿，RIP 结构上做不到；
-2. 用 `halftone/ed_fs.py` 的串行误差扩散修 1-bit 老路的条纹退化解
+3. 用 `halftone/ed_fs.py` 的串行误差扩散修 1-bit 老路的条纹退化解
    （PITFALLS #12/#13）；
-3. GCR（暗部偏好 K 墨）与通道去相关项；
-4. 把 ΔE00 从 8.92 压到 3.0 可用线（需标定 LUT + 更多训练数据）。
+4. GCR（暗部偏好 K 墨）与通道去相关项。

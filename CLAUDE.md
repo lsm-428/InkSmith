@@ -23,4 +23,4 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   `halftone/ed_fs.py`（FS 式串行误差扩散）作**推理后处理**使用；当训练前向会发散
   （PITFALLS #33）。
 - 长期路线细节（Neugebauer 叠印、通道去相关、TAC 上限、GCR）见 `WORKFLOW.md`
-  阶段 5（**已实现+已收敛**，不再是"待做"）。
+  阶段 5（**已实现、训练已收敛，但仍未达可用线**，不再是"待做"）。
