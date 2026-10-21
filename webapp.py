@@ -1,19 +1,13 @@
-"""网页版对照：上传图 -> 三条路线出位图 + 指标。
+"""网页版对照：上传图 -> 三条路线出位图 + 指标（1-bit film 主线）。
 
-支持两种 ckpt（按 ckpt["args"] 自动判断，前端同步切换）：
-
-  1-bit 灰度（默认）：NN vs Floyd-Steinberg vs Ghostscript 筛网，PSNR + 墨量
-  CMYK 2-bit 全彩：NN vs 工业 RIP（gs），Lab ΔE00 + 四通道墨量 + TAC/OOG 审计
-
-用法：uv run python webapp.py [--port 8123] [--ckpt runs/cmyk_sd/best.pt]
+用法：uv run python webapp.py [--port 8123] [--ckpt runs/onebit/best.pt]
 浏览器打开 http://localhost:8123
 标准库实现，无需新依赖。
 
 接口：
-  GET  /              页面（按 ckpt 类型渲染）
-  POST /api/convert   {names[], images[dataURL], dpi?}        1-bit 三路线
-  POST /api/wedge     {dpi?, levels?}                         1-bit 灰度尺诊断
-  POST /api/cmyk      {names[], images[dataURL], rip?, ed?}   CMYK 全彩
+  GET  /              页面
+  POST /api/convert   {names[], images[dataURL], dpi?}  三路线对照
+  POST /api/wedge     {dpi?, levels?}                   灰度尺诊断
 """
 import argparse
 import base64
@@ -27,16 +21,9 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from eval import (find_icc, load_model_and_printer, psnr,  # noqa: F401
-                  rip_cmyk, triplet)
-from halftone.cmyk import (LEVELS, lab_to_srgb,  # noqa: F401
-                           load_or_build_lut256, neugebauer_lab_2bit,
-                           srgb_to_cov, srgb_to_lab)
-from halftone.model import hard_levels
-from train import delta_e_2000
+from eval import load_model_and_printer, psnr, triplet
 
 MAX_SIDE = 512          # 单图最长边，控制显存与传输体积
-MAX_BATCH = 12
 
 
 # ---------------------------------------------------------------- 图像工具
@@ -67,119 +54,6 @@ def fit(img, max_side=MAX_SIDE):
                          Image.LANCZOS)
         return img, True
     return img, False
-
-
-# ---------------------------------------------------------------- CMYK 路线
-
-_CK = {}
-
-
-def cmyk_ctx(ckpt):
-    """按 ckpt 缓存 (model, icc, intent, lut256, device)。"""
-    if ckpt not in _CK:
-        model, _printer, a, device = load_model_and_printer(ckpt)
-        if not a.get("cmyk"):
-            raise SystemExit(f"{ckpt} 不是 CMYK ckpt（args.cmyk != True）")
-        icc = find_icc(a.get("icc"))
-        _CK[ckpt] = (model, icc, a.get("icc_intent", 0),
-                     load_or_build_lut256(Path(ckpt).parent, icc,
-                                          a.get("icc_intent", 0)),
-                     device)
-    return _CK[ckpt]
-
-
-def cmyk_one(name, dataurl, ckpt, rip=False, ed=False):
-    """单图 CMYK 推理：返回指标 + 预览图（dataURL）。"""
-    t0 = time.time()
-    model, icc, intent, lut256, device = cmyk_ctx(ckpt)
-    img, scaled = fit(decode(dataurl).convert("RGB"))
-    w, h = img.size
-    pw, ph = (8 - w % 8) % 8, (8 - h % 8) % 8
-    arr = np.asarray(img, dtype=np.float32) / 255.0
-    t = torch.from_numpy(arr).permute(2, 0, 1)[None].to(device)
-    t = F.pad(t, (0, pw, 0, ph), mode="reflect")
-    lab_tg = srgb_to_lab(t.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-    with torch.no_grad():
-        logits = model(t)
-        if ed:
-            from halftone.ed_fs import ed_fs
-            hard = ed_fs(logits, srgb_to_cov(t.permute(0, 2, 3, 1), icc,
-                                             intent).permute(0, 3, 1, 2),
-                         LEVELS.to(device))
-        else:
-            hard = hard_levels(logits / 0.01)
-        cov = (hard * LEVELS.view(1, 1, 1, 4).to(device)).sum(-1)   # (1,4,H,W)
-        lab_nn = neugebauer_lab_2bit(hard, lut256)
-        de = delta_e_2000(lab_nn, lab_tg)
-    H, W = arr.shape[0], arr.shape[1]
-    rgb_nn = lab_to_srgb(lab_nn[0].permute(1, 2, 0)).clamp(0, 1).cpu().numpy()
-    cov_np = cov[0].cpu().numpy()[:4, :H, :W]
-
-    # RIP 基线（可选，gs 子进程慢）
-    de_rip, rip_rgb, rip_k = None, None, None
-    if rip:
-        rc = rip_cmyk(img, icc, intent)
-        if rc is not None:
-            rt = torch.from_numpy(rc).unsqueeze(0).to(device)
-            if rt.shape[-2:] != (t.shape[2], t.shape[3]):
-                rt = F.interpolate(rt, size=(t.shape[2], t.shape[3]),
-                                   mode="nearest")
-            from eval import one_hot_from_cov
-            de_rip = delta_e_2000(neugebauer_lab_2bit(
-                one_hot_from_cov(rt), lut256), lab_tg).mean().item()
-            rip_k = float(rc[3].mean())
-            # RIP 位图预览：K 通道覆盖率合成灰图（True=白的 bool 语义已反转）
-            rk = np.stack([rc[3][:H, :W] * 255] * 3, -1).astype(np.uint8)
-
-    # OOG：目标色是否在 CMY 四面体外
-    lin = t.permute(0, 2, 3, 1).clamp(0, 1)
-    lin = torch.where(lin <= 0.04045, lin / 12.92, ((lin + 0.055) / 1.055) ** 2.4)
-    xyz = lin @ torch.tensor([[0.4124, 0.3576, 0.1805],
-                              [0.2126, 0.7152, 0.0722],
-                              [0.0193, 0.1192, 0.9505]], device=device)
-    oog = (xyz.sum(-1) > 1.0).float().mean().item() * 100
-
-    # 预览面板：目标 | NN 合成 | RIP 合成(可选) | C M Y K 覆盖率
-    panels = [(arr[:H, :W, :3] * 255).astype(np.uint8),
-              (rgb_nn[:H, :W] * 255).astype(np.uint8)]
-    if rip and de_rip is not None:
-        panels.append(rk)
-    panels += [np.stack([(cov_np[c] * 255).astype(np.uint8)] * 3, -1)
-               for c in range(4)]
-    strip = Image.fromarray(np.concatenate(panels, axis=1), "RGB")
-    # 单通道并排图（放大看网点用）
-    chans = Image.fromarray(
-        np.concatenate([np.stack([(cov_np[c] * 255).astype(np.uint8)] * 3, -1)
-                        for c in range(4)], axis=1), "RGB")
-    out = {
-        "name": name, "size": [w, h], "scaled": scaled,
-        "ms": round((time.time() - t0) * 1000),
-        "de": round(de.mean().item(), 2),
-        "de_p95": round(torch.quantile(de.flatten(), 0.95).item(), 2),
-        "de_max": round(de.max().item(), 2),
-        "de_rip": None if de_rip is None else round(de_rip, 2),
-        "gain": None if de_rip is None else round(de_rip - de.mean().item(), 2),
-        "tac": round(cov.sum(1).mean().item(), 2),
-        "oog": round(oog, 1),
-        "ink": {k: round(float(v), 3) for k, v in
-                zip("CMYK", cov_np.reshape(4, -1).mean(1))},
-        "rip_k": None if rip_k is None else round(rip_k, 3),
-        "img": {"strip": png_dataurl(strip), "chans": png_dataurl(chans)},
-    }
-    # 四通道位图供下载：CMYK 模式不能存 PNG，转 RGB 预览 + 保留各通道 PNG
-    out["dl"] = {
-        "cmyk_png": png_dataurl(Image.merge(
-            "RGB", [Image.fromarray(
-                (cov_np[c] * 255).astype(np.uint8), "L") for c in range(3)])),
-        **{f"ch_{k.lower()}_png": png_dataurl(
-            (cov_np[i] * 255).astype(np.uint8))
-           for i, k in enumerate("CMYK")},
-    }
-    return out
-
-
-def cmyk_batch(names, images, ckpt, rip=False, ed=False):
-    return [cmyk_one(n, u, ckpt, rip, ed) for n, u in zip(names, images)]
 
 
 # ---------------------------------------------------------------- 1-bit 路线
@@ -276,10 +150,8 @@ def wedge(n_levels=16, dpi=None, ckpt=None):
 
 # ---------------------------------------------------------------- 页面
 
-def page_html(cmyk_mode, ckpt):
-    """按 ckpt 类型渲染整页（暗色，单文件无外部依赖）。"""
-    if cmyk_mode:
-        return CMYK_HTML.replace("__CKPT__", ckpt)
+def page_html(ckpt):
+    """渲染整页（暗色，单文件无外部依赖）。"""
     return GRAY_HTML.replace("__CKPT__", ckpt)
 
 
@@ -452,103 +324,6 @@ function card(d){
 }
 </script></body></html>""".replace("__CSS__", BASE_CSS)
 
-CMYK_HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>神经半色调 · CMYK 2-bit 全彩</title><style>__CSS__</style></head><body>
-<header><h1>神经半色调 · CMYK 2-bit 全彩<span class="tag" id="ck">__CKPT__</span></h1>
-<div class="sub">模型四通道 4 档墨滴 vs 工业 RIP（同 ICC 分离 + ghostscript 半色调）。指标为 Lab ΔE00，越小越好。</div></header>
-<main>
-<div class="bar">
-  <input id="f" type="file" accept="image/*" multiple>
-  <label class="chk"><input type="checkbox" id="rip"> 跑 RIP 基线</label>
-  <label class="chk"><input type="checkbox" id="ed"> ED-FS 后处理</label>
-  <button onclick="go()">开始转换</button>
-  <span id="st"></span>
-</div>
-<div id="summary"></div><div id="out"></div>
-</main>
-<div id="zoom" onclick="this.style.display='none'"><img></div>
-<script>
-const $=id=>document.getElementById(id);
-let LAST=[];
-async function post(url,body){
-  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(body)});
-  if(!r.ok) throw new Error(await r.text());
-  return r.json();
-}
-const zoom=src=>{const z=$('zoom');z.style.display='flex';z.querySelector('img').src=src;};
-const dl=(url,n)=>{const a=document.createElement('a');a.href=url;a.download=n;
-  document.body.appendChild(a);a.click();a.remove();};
-function fig(cap,src,name){
-  return `<div class="fig"><img src="${src}" onclick="zoom('${src}')" alt="${cap}">
-  <div class="cap"><span>${cap}</span>${name?`<a href="${src}" download="${name}">下载</a>`:''}</div></div>`;
-}
-async function go(){
-  const fs=$('f').files;
-  if(!fs.length){$('st').innerText='请选择图片';return;}
-  $('st').innerText='读取中...';$('out').innerHTML='';$('summary').innerHTML='';
-  const imgs=[],names=[];
-  for(const file of fs){
-    names.push(file.name);
-    imgs.push(await new Promise(r=>{const rd=new FileReader();
-      rd.onload=()=>r(rd.result);rd.readAsDataURL(file);}));
-  }
-  $('st').innerText=$('rip').checked?'转换中（含 gs RIP 基线，较慢）...':'转换中...';
-  let data;
-  try{data=await post('/api/cmyk',{names,images:imgs,
-    rip:$('rip').checked,ed:$('ed').checked});}
-  catch(e){$('st').innerText='失败: '+e.message;return;}
-  LAST=data;
-  const t=data.reduce((a,d)=>a+d.ms,0);
-  $('st').innerText=`完成 ${data.length} 张 · ${(t/1000).toFixed(1)} s`;
-  $('out').innerHTML=data.map(card).join('');
-  const withRip=data.filter(d=>d.de_rip!=null);
-  if(data.length>1){
-    const m=k=>data.reduce((a,d)=>a+d[k],0)/data.length;
-    let chips=`<span class="chip"><span class="k">ΔE00 均值</span><b>${m('de').toFixed(2)}</b></span>
-      <span class="chip"><span class="k">p95</span><b>${m('de_p95').toFixed(2)}</b></span>
-      <span class="chip"><span class="k">TAC</span><b>${m('tac').toFixed(2)}</b></span>
-      <span class="chip"><span class="k">OOG</span><b>${m('oog').toFixed(1)}%</b></span>`;
-    if(withRip.length){
-      const r=withRip.reduce((a,d)=>a+d.de_rip,0)/withRip.length;
-      const g=data.reduce((a,d)=>a+(d.gain||0),0)/data.length;
-      chips+=`<span class="chip"><span class="k">RIP ΔE00</span><b>${r.toFixed(2)}</b></span>
-        <span class="chip ${g>=0?'good':'bad'}"><span class="k">NN − RIP</span><b>${(g>=0?'+':'')+g.toFixed(2)}</b></span>`;
-    }
-    $('summary').innerHTML=`<div class="card"><h3>均值（${data.length} 张）</h3>
-      <div class="chips">${chips}</div>
-      <p class="note">ΔE00 &lt; 3 视为印刷可用；TAC 建议 ≤ 3.2；OOG% 高说明训练集缺极端色相。</p></div>`;
-  }
-}
-function card(d){
-  const n=d.name.replace(/\\.[^.]+$/,'');
-  const cl=v=>v>=0?'good':'bad';
-  const s=v=>(v>=0?'+':'')+v;
-  let chips=`<span class="chip"><span class="k">ΔE00</span><b class="big">${d.de}</b></span>
-    <span class="chip"><span class="k">p95</span><b>${d.de_p95}</b></span>
-    <span class="chip"><span class="k">max</span><b>${d.de_max}</b></span>
-    <span class="chip"><span class="k">TAC</span><b>${d.tac}</b></span>
-    <span class="chip ${d.oog>15?'warn':''}"><span class="k">OOG</span><b>${d.oog}%</b></span>`;
-  if(d.de_rip!=null){
-    chips+=`<span class="chip"><span class="k">RIP ΔE00</span><b>${d.de_rip}</b></span>
-      <span class="chip ${cl(d.gain)}"><span class="k">NN − RIP</span><b>${s(d.gain)}</b></span>`;
-  }
-  chips+=`<span class="chip"><span class="k">墨量 C/M/Y/K</span><b>${d.ink.C}</b> / ${d.ink.M} / ${d.ink.Y} / ${d.ink.K}</span>`;
-  return `<div class="card"><h3>${d.name}<span class="meta">${d.size[0]}×${d.size[1]}${d.scaled?' · 已缩放':''} · ${d.ms} ms</span></h3>
-  <div class="chips">${chips}</div>
-  <div class="imgs">
-    ${fig('目标',d.img.strip.split('##')[0]||d.img.strip)}
-  </div>
-  <div class="imgs" style="margin-top:9px">
-    ${fig('C 覆盖率',d.img.chans.split('##')[0]||d.img.chans)}
-  </div>
-  <p class="note">上方长条 = 目标 | 模型合成${d.de_rip!=null?' | RIP 合成':''} | C | M | Y | K 覆盖率（白=无墨）；下方 = 四通道并排，可点开放大看网点。
-  <a href="${d.dl.cmyk_png}" download="${n}_cmyk.png">下载 CMYK 位图</a>（PDF 版用 <code>eval.py cmyk</code> 生成，过 gs inkcov 审计）。</p></div>`;
-}
-</script></body></html>""".replace("__CSS__", BASE_CSS)
-
-
 # ---------------------------------------------------------------- HTTP
 
 CKPT = None
@@ -563,8 +338,7 @@ class Handler:
         class H(BaseHTTPRequestHandler):
             def do_GET(self):
                 if self.path in ("/", "/index.html"):
-                    model, _p, a, _d = load_model_and_printer(CKPT)
-                    body = page_html(bool(a.get("cmyk")), CKPT).encode("utf-8")
+                    body = page_html(CKPT).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
@@ -586,24 +360,16 @@ class Handler:
                 self.wfile.write(body)
 
             def do_POST(self):
-                if self.path not in ("/api/convert", "/api/wedge", "/api/cmyk"):
+                if self.path not in ("/api/convert", "/api/wedge"):
                     self.send_response(404)
                     self.end_headers()
                     return
                 try:
                     ln = int(self.headers["Content-Length"])
                     req = json.loads(self.rfile.read(ln))
-                    if self.path == "/api/cmyk":
-                        names, imgs = req["names"], req["images"]
-                        if len(names) != len(imgs) or len(imgs) > MAX_BATCH:
-                            raise ValueError(f"一次最多 {MAX_BATCH} 张，且 names/images 对齐")
-                        self._json(200, cmyk_batch(names, imgs, CKPT,
-                                                   rip=req.get("rip", False),
-                                                   ed=req.get("ed", False)))
-                        return
                     if not _gray_mode(CKPT):
                         raise ValueError(
-                            "当前 ckpt 是 CMYK 全彩路线，请用 /api/cmyk")
+                            "CMYK 路线已于 2026-10-21 停止支持，请用 1-bit ckpt")
                     if self.path == "/api/wedge":
                         self._json(200, wedge(int(req.get("levels", 16)),
                                               req.get("dpi") or None, CKPT))
@@ -626,12 +392,11 @@ def main():
     global CKPT
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=8123)
-    p.add_argument("--ckpt", default="runs/cmyk_sd/best.pt")
+    p.add_argument("--ckpt", default="runs/onebit/best.pt")
     args = p.parse_args()
     CKPT = args.ckpt
     model, _printer, a, _device = load_model_and_printer(CKPT)
-    kind = ("CMYK 2-bit 全彩" if a.get("cmyk")
-            else f"1-bit 灰度（printer={a.get('printer', 'paper')}）")
+    kind = f"1-bit（printer={a.get('printer', 'paper')}）"
     H = Handler().H
     from http.server import HTTPServer
     httpd = HTTPServer(("127.0.0.1", args.port), H)

@@ -13,7 +13,7 @@ _EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff")
 class RgbCrops(Dataset):
     """每次取一张图随机裁 size×size sRGB 块，返回 3×H×W（[0,1]）。
 
-    灰度图会被转成 3 通道（值复制）——CMYK 路线可复用同一批灰度数据。
+    灰度图会被转成 3 通道（值复制），1-bit 训练路径取第 0 通道。
     """
 
     def __init__(self, root="data/images", size=256, length=2000):
@@ -72,5 +72,5 @@ class RgbCrops(Dataset):
         return img
 
 
-# 旧名兼容：灰度路径仍可经 RgbCrops（灰度图会转成 3 通道）
+# 旧名兼容
 GrayCrops = RgbCrops

@@ -1,4 +1,7 @@
-"""AI 生成训练图：用 Stable Diffusion 出照片级彩色图，替代脚本合成。
+"""AI 生成训练图：用 Stable Diffusion 出照片级彩色图（CMYK 路线遗留，2026-10-21 起主线不依赖，见 PITFALLS #50）。
+
+原用途：替代脚本合成解决 CMYK 的分布裂口（#22/#39）。膜层主线是灰度厚度图，
+用 gen_data.py 即可；本脚本保留供 2-bit film 未来需要照片域纹理时参考。
 
 动机（见 PITFALLS #22）：`gen_data.py` 脚本合成的图饱和度 0.619，
 而真实照片只有 0.276——合成图「太艳」，与 photos_val 存在分布裂口

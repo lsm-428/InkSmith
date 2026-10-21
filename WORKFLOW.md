@@ -1,51 +1,52 @@
-# 工作流程：神经半色调（图像 → 喷墨二值打印图）
+# 工作流程：神经半色调（图像 → 喷墨膜厚位图）
 
-> 目标：NN 输入连续灰度图，直接输出喷墨可打的 1-bit 位图，跳过传统误差扩散。
-> 本文档是整个流程的可复现操作手册，按阶段组织。
+> 目标：NN 输入连续灰度（厚度）图，直接输出喷墨可打的位图，跳过传统误差扩散。
+> 本文是流程的可复现操作手册，按阶段组织。
+>
+> 2026-10-21：**CMYK 全彩路线（旧阶段 5）已整体移除**——代码删除，结论归档
+> PITFALLS #16–#30/#35–#48，决策链 #50。本手册只覆盖 1-bit film 主线；
+> 下一步 2-bit film 见 README 路线图。
 
 ## 阶段 0：环境（一次性）
 
 ```bash
-uv sync        # 按 pyproject.toml 装 torch 2.7.1+cu118（EFD 项目同款配置）
+uv sync        # 按 pyproject.toml 装 torch 2.7.1+cu118
 ```
 
 验证 GPU：`uv run python -c "import torch; print(torch.cuda.is_available())"` 应输出 `True`。
+⚠ 沙箱会遮蔽 GPU（PITFALLS #20），报错先查 `/proc/driver/nvidia/version`。
 
 ## 阶段 1：训练数据
 
-两条路线，可叠加（都放 `data/images/`）：
+主线是**灰度厚度图**，一条来源：
 
 | 来源 | 命令 | 说明 |
 |---|---|---|
-| **AI 生成（推荐，CMYK 路线主数据源）** | `uv run python gen_ai.py --n 400` | Stable Diffusion 1.5 文生图，照片域纹理。ΔE00 比脚本合成低 18%（PITFALLS #39） |
-| 脚本合成 | `uv run python gen_data.py --n 500 --rgb --icc <icc>` | 6 类频率成分：渐变/斑块/分形噪声/几何/条纹/混合 |
-| 真实照片 | 手动拷贝进 `data/images/` | 内容越接近实际打印目标越好 |
+| 脚本合成 | `uv run python gen_data.py --n 500` | 6 类频率成分：渐变/斑块/分形噪声/几何/条纹/混合 |
+| 真实厚度图 | 手动拷贝进 `data/images/` | 目标图案越接近实际打印越好 |
 
-- 数据量：脚本合成建议 500~2000；SD 生成建议 ≥400（1000 张是 2026-10-20 的规模）。
-- 重新生成会覆盖同名文件（种子固定，可复现）；`gen_ai.py` 已支持 resume
-  （从目录已有张数继续编号，不会覆盖）。
-- **`data/images` 与 `data/images_ai` 当前都是 RGB**（脚本用 `--rgb` 生成，
-  文件名 `gen_*_color.png`），`--cmyk` 训练直接可用，不需要再转彩色。
-- 注意 PITFALLS #40：**不要**试图用"脚本 + 调色"复现 SD 的效果，
-  两者的颜色分布统计量几乎一致，差的是内容纹理真实性。
+- 数据量建议 500~2000；重新生成会覆盖同名文件（种子固定可复现）。
+- 验证集 `data/val/`：种子 123 固定 30 张，**勿混入训练集**；
+  丢失重建 `uv run python gen_data.py --n 30 --seed 123 --out data/val`。
+- `data/images_ai`（SD 彩色图）与 `gen_ai.py` 是 CMYK 路线遗留，已停用；
+  `gen_ai.py` 保留在仓库但主线不再依赖。
 
 ## 阶段 2：训练
 
 **自动模式（推荐，默认行为）**：
 `uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/onebit`
 
-两段式训练（这是踩坑后的正确姿势，详见 PITFALLS.md #1/#4）：
+两段式训练（踩坑后的正确姿势，详见 PITFALLS #1/#4）：
 
 1. **退火阶段**（默认每轮 10 epoch × 4 轮）：`sigmoid(logits/T)` 软前向，
-   T 逐轮 1.0→0.3→0.09→0.03，`w_bin` 逐轮加强。软域学覆盖率。
+   T 逐轮 1.0→0.3→0.09→0.03，`w_bin` 逐轮加强（0.05·轮；2026-10-21 修复后
+   才真实生效，PITFALLS #47）。软域学覆盖率。
 2. **硬 STE 微调**（默认 1 轮 20 epoch）：硬前向 + 截断 STE 反传，
-   消灭软值作弊，训练指标从此 = 推理指标。**严禁从零直接硬 STE**。
+   消灭软值作弊，训练指标从此 = 推理指标。**严禁从零直接硬 STE**（#1）。
 
 策略：孤立点过多则 `w_iso` 加倍（封顶 0.2）；psnr 上涨则续训；停滞则 `lr` 减半。
-每轮结束在验证集（`data/val`，种子 123 固定生成 30 张）测三项指标：
-psnr（**硬阈值**，唯一可信）、孤立点率、明暗偏差。
-产物：`best.pt`（最佳权重）、`train.log`（逐 epoch）、
-`pipeline_log.jsonl`（逐轮，中途被杀不丢）。
+每轮结束在验证集测硬阈值 psnr/孤立点率/明暗偏差。
+产物：`best.pt`、`train.log`（逐 epoch）、`pipeline_log.jsonl`（逐轮，中途被杀不丢）。
 
 手动/微调单段（`--rounds 1`，一般不用）：
 
@@ -55,211 +56,92 @@ uv run python train.py --rounds 1 --data data/images --epochs 20 --length 2000
 ```
 
 - 每个 epoch 产出：`<--out>/epoch_NNN.png`（三行：目标 / 二值墨点 / 模拟打印）。
-  `--out` 默认 `runs/halftone`，**实际实验一律显式指定**（如实测用的
-  `runs/cmyk_sd`），别依赖默认值。
-- 权重：`<--out>/best.pt`、`<--out>/last.pt`（含训练超参，eval/infer 自动读取）
-- 参考速度：P2000 上约 70s/epoch（batch 16，256×256）
+- 参考速度：P2000 上约 70s/epoch（batch 16，256×256）。
 
 **验收标准**（数值优先，肉眼只作辅助）：
-1. 硬阈值验证 psnr 达标（**唯一可信指标**，见下方"别用 train.log 的 psnr"）；
-2. 跑 `uv run python eval.py wedge --ckpt runs/onebit/best.pt`：分段覆盖偏差 |x|<0.05，
-   且**行墨量 std < 0.05**（>0.05 说明模型用水平条纹代替像素抖动，见 PITFALLS #12）；
-3. `epoch_*.png` 第二行（墨点）是细腻抖动纹理，不是大块团聚/条纹——这项只看图，
-   因为它对应上面那个数字判据。
+1. 硬阈值验证 psnr（**唯一可信指标**，见"别用 train.log 的 psnr"）；
+2. `uv run python eval.py wedge --ckpt runs/onebit/best.pt --ed`：分段覆盖偏差
+   |x|<0.05，且**行墨量 std < 0.05**（>0.05 说明用水平条纹代替像素抖动，#12）；
+3. `epoch_*.png` 第二行（墨点）是细腻抖动纹理，不是大块团聚/条纹。
 
-> **别用 `train.log` 里的 psnr 做验收**：那是软前向值，可以靠"半滴墨"作弊到
-> 30dB，硬阈值后只剩 13dB（PITFALLS #4）。每轮日志里的 `[验证] psnr=` 才是硬阈值。
+> **别用 `train.log` 里的 psnr 做验收**：退火轮是软前向值，可靠"半滴墨"作弊到
+> 30dB+，硬阈值后只剩 13dB（PITFALLS #4/#14）。每轮日志里的 `[验证] psnr=` 才是硬阈值。
 
 不达标时的调节方向：
 
 | 症状 | 调法 |
 |---|---|
-| 墨点团聚成块 / 孤立点多 | 调大 `--w-iso`（pipeline 会自动加倍，封顶 0.2） |
-| 灰度尺呈 S 形畸变 | 查 `eval.py wedge` 的行墨量 std，是条纹退化解（见 PITFALLS #12）。**已解决**：推理加 `--ed`（14.80→24.67dB，详见 PITFALLS #42）；但仅打平 GS、仍差 FS 1.15（#43/#45） |
-| 中间调发脏/层次糊 | 检查 `--sigma-um` 是否匹配真实墨点（film）或调大 `--w-hvs` |
-| 整体偏黑/偏白 | paper 调 `--gain`；film 看 `eval.py one` 的 inkcov 与目标覆盖率 |
-| 退火全程躺平不涨 | 打印模糊 σ 必须 ≳1.4px（film: `--sigma-um 25 --dpi 1440`），见 PITFALLS #11 |
+| 墨点团聚成块 / 孤立点多 | 调大 `--w-iso`（pipeline 自动加倍，封顶 0.2） |
+| 退火全程躺平不涨 | σ 必须 ≳1.4px：`--sigma-um 25 --dpi 1440`（#11） |
+| 整体偏黑/偏白 | film 看 `eval.py one` 的 inkcov 与目标覆盖率 |
+| 灰度尺呈 S 形/阶跃畸变 | `eval.py wedge` 行墨量 std 判条纹退化解（#12/#13）；`--ed` 已治 |
 
-## 阶段 3：推理出打印位图
+## 阶段 3：推理出打印位图（**必加 `--ed`**）
 
 ```bash
-uv run python eval.py infer 照片.jpg --ckpt runs/cmyk_sd/best.pt --out out/照片
-# （1-bit 路线用 1 通道权重；CMYK 权重走 eval.py cmyk 子命令，见阶段 5）
+uv run python eval.py infer 照片.jpg --ckpt runs/onebit/best.pt --ed --out out/照片
 ```
 
 产出两个文件：
-- `*_bitmap.png` — 0/1 二值图，**这就是发给打印机的位图**；
-- `*_preview.png` — 经扩散模型模拟的纸上效果，用于打印前自检。
+- `*_bitmap.png` — 0/1 二值图，**这就是发给打印机的位图**（film 语义：1=落墨=增厚）；
+- `*_preview.png` — 经扩散模型模拟的膜厚效果，用于打印前自检。
 
-## 阶段 4：真实打印机标定（部分完成）
+⚠ 不带 `--ed` 的硬阈值输出是逐像素独立决策，膜基下 14.80dB 远逊 FS 25.82，
+且含条纹退化解（#12/#13/#42）。`--ed` 把量化误差扩散给后续像素，行墨量 std
+0.157→0.024、PSNR→24.67；**但仍差 FS 1.15（#43/#45），模型权重贡献 +0.02dB**。
 
-**已完成**：物理参数已落实到代码。
+## 阶段 4：真实打印机标定（主线闭环，部分完成）
+
+**已完成**：物理参数已落实到代码，出处可溯。
 
 - 硬件：KM1024iSHE（6 pL，360 dpi/通道 ×4 行），非吸收膜基材，100% 固含墨水
-- 实测墨滴铺展直径 50 µm → 高斯等效 σ = 12.5 µm → `σ[px] = 12.5×dpi/25400`
-- 膜基物理 = 体积守恒线性叠加（无吸收饱和），对应 `printer.py` 的
-  `FilmSimulator`；纸基吸收型保留为 `PrinterSimulator`
-- 训练（单 dpi，已验证配方）：`train.py --printer film --sigma-um 25 \
-    --dpi 1440 --out runs/onebit`
-  σ=25µm@1440dpi = 1.42px，是两段式配方能结晶的**下限**（σ<1.4px 会让退火全程
-  躺平，见 PITFALLS #11）。
-- ~~训练（连续 dpi）~~：`--dpi-min/--dpi-max` 随机 dpi 模式代码仍支持，但
-  **线性物理下已验证无收益**（只稀释纹理结晶信号，且网络无法感知当前 batch 的 σ）。
-  单 dpi 训练即可，靠图案 dpi 无关性泛化。详见 PITFALLS #11。
-- 推理：`eval.py infer 图.jpg --ckpt runs/onebit/best.pt --dpi 1440`
-  （--dpi 只影响预览渲染，位图与 dpi 无关）
-- 参数出处可溯：`uv run python calc_sigma.py`（读 printheads.json + 实测铺展）
+- 实测墨滴铺展直径 50 µm → 高斯等效 σ = 12.5 µm → `σ[px] = σ[µm]×dpi/25400`
+- 膜基物理 = 体积守恒线性叠加（无吸收饱和）= `printer.py::FilmSimulator`
+- 训练（已验证配方）：`train.py --printer film --sigma-um 25 --dpi 1440 --out runs/onebit`
+  （σ=25µm@1440dpi=1.42px 是两段式配方能结晶的**下限**，#11）
+- 推理：`eval.py infer 图.jpg --ckpt runs/onebit/best.pt --ed --dpi 1440`（--dpi 只影响预览）
+- 参数出处：`uv run python calc_sigma.py`
 
-**语义注意**：film 模式下灰度值 ↔ 相对膜厚（1=满覆盖标称膜厚），
-评价指标是膜厚复刻精度；`eval.py` 会自动用反相图给 FS/GS 加网以对齐语义。
+**待做（按对膜层的意义排序）**：
+1. **档位墨量线性度（③）**：单通道 4 档平铺块各打一张 → 扫描/测厚 → 验证
+   实际落墨量 ≈ 0/⅓/⅔/1；6pL 喷头档位间常非线性。2-bit film 训练前完成；
+2. **铺展核实测（②）**：孤点序列打 → 高分辨扫描 → 拟合真实核替换高斯假设；
+3. **dpi 对齐（⑤）**：刻度尺靶 → 实测 dpi，供扫描分析与图案对齐。
 
-**待做**：打印测试图 → 实测膜厚分布（轮廓仪）→ 拟合真实铺展核替换高斯。
+（网点扩大/坏嘴标定：坏嘴归打印机维护不做；网点扩大的单通道等效物是②，
+旧 CMYK 标定靶脚本 `calib_target.py` 已随路线删除。）
 
-## 阶段 5（已实现、训练已收敛，仍未达可用线）：全彩 CMYK 2-bit
+## 阶段 5：2-bit film（规划中，未实现）
 
-> 2026-10-17 落地：`--cmyk` 全链路（train.py / eval.py cmyk / halftone/cmyk.py）。
-> 2026-10-19 v4 全量训练收敛（1300 张脚本合成+灰度）：视觉口径 ΔE00 7.82。
-> 2026-10-20 SD 照片域数据重训（**400 张**，当前 `data/images_ai` 已扩到 1000 张但未用于训练）：**当前最优 `runs/cmyk_sd/best.pt`，
-> photos_val 视觉口径（σ=2px）ΔE00 6.11**，gs 工业 RIP **5.77**——**同级，NN 略差 0.34**。
->
-> ⚠ **2026-10-20 评测口径审计推翻了此前所有「大胜」结论**（PITFALLS #43/#44/#45）：
-> - 旧口径「硬域 ΔE00 8.92 vs RIP 29.87 / 赢 20.98」是**逐像素**比半色调——该口径惩罚
->   dithering 本身，1-bit 必输、多档必赢，不能作结论。视觉口径下 NN 与 RIP 同级。
-> - 旧「12/12 全胜」里的 RIP 基线还叠加了几何错位（未补边原图被 interpolate），
->   抬高 RIP **1.74 ΔE00**，已修。
-> - **最重要的未解决问题**：30 行 numpy 经典多档 ED 实测 ΔE00 **2.21**（12 张全量，
->   已低于 3.0 可用线），反超 NN 6.11、也反超 gs RIP 5.77；ED 后处理下模型权重
->   贡献为 **0**（CMYK 两个 ckpt 开 ED 都是 2.28；1-bit 零 logits 也 24.67）。
->   2-bit 多档本身有价值，但**当前网络没有贡献**。
+单通道 × 4 档（0/⅓/⅔/1 名义值）× FilmSimulator。要点：
 
-### 已实现的模型（与阶段 5 原计划的差异）
-
-```
-sRGB 目标图（in_ch=3）
- → U-Net 输出 out_ch=4 × levels=4 logits → (B,4,H,W,4)
- → 互斥 softmax（退火 T）/ 硬 argmax one-hot（STE 微调）
- → 每通道覆盖率 cov = Σ p·[0,1/3,2/3,1]
- → LUT256 查表（256 种 4 档组合的 Lab，FOGRA39L 标定）
- → Lab 空间 ΔE2000 损失
-```
-
-- **没有可微打印模拟器**：CMYK 网点扩大未标定（阶段 5 的"标定"一节未做），
-  所以 `--cmyk` 时 printer=None，损失直接比 Neugebauer 纸上 Lab。
-- **LUT256 取代 16 项 Demichel 面积加权**：4 档下组合数是 4⁴=256，
-  用 ICC 直接标定 256 个色块的 Lab（`build_lut256`），比"先算 16 项面积
-  再乘 16 个原色反射率"少一层建模误差，也不需要 Yule-Nielsen n 值。
-  代价是硬编码单一 ICC（默认 FOGRA39L，`--icc` 可换）。
-- **ICC 同时给出软目标**：`srgb_to_cov()` 把 sRGB 分离成四通道连续覆盖率，
-  作为 `l_cov` 的软监督目标（见 PITFALLS #17，w_cov=0.3）。
-
-### 命令
-
-```bash
-# 1. 生成彩色训练图（照片化分布：--sat/--gamma 拉高 OOG 与动态范围）
-uv run python gen_data.py --n 800 --rgb --icc /usr/share/color/icc/colord/FOGRA39L_coated.icc \
-    --cmyk-frac 0.15 --sat 0.6 --gamma 1.4 --size 512
-# 2. 训练（默认 FOGRA39L、w_cov=0.3、w_tac=1.0、tac_max=3.2、target_de=3.0）
-uv run python train.py --cmyk --batch 4 --data data/images_ai --out runs/cmyk_sd
-# 3. 评测：硬域 ΔE00 + 四通道 gs inkcov 审计 + OOG% + TAC（--rip 加工业基线）
-uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk_sd/best.pt --rip
-# 4. 推理后处理：ED-FS 误差扩散（拿 dithering，多样性 1.77 vs 硬 argmax 1.1）
-uv run python eval.py cmyk data/photos_val --ckpt runs/cmyk_sd/best.pt --ed --rip
-```
-
-⚠ CMYK 打印位图 PDF 由 `eval.py cmyk` 落盘（`out/cmyk/<名>_cmyk.pdf`），
-字节语义为**墨量**（0=无墨），见 PITFALLS #48——该语义随 PIL/gs 版本变过，
-换环境必须重跑端点块自检（全墨渲黑/全白渲白）。
-
-**注意 `--batch 4`**：CMYK 的 256 组合张量链显存峰值远高于 1-bit，
-batch 16×256² 会 `CUBLAS_STATUS_ALLOC_FAILED`（PITFALLS #20）。
-
-### 调参结论（GPU 全量实测，PITFALLS #17–#36）
-
-| 项 | 结论 | 依据 |
-|---|---|---|
-| `--w-cov 0.3` | 必须 >0；0 时跨通道作弊（K 1/3 落成 C 档 2） | PITFALLS #17 |
-| `--w-tac 1.0` | 保留；w_tac=0 时 TAC 失控到 1.85 | 真实数据 3 epoch 扫参 |
-| `--w-lab 1.0` | ΔE 主损失 | — |
-| `--tac-max 3.2` | TAC 上限（四通道墨量和） | 12 张照片单像素 TAC 99 分位 2.84 |
-| 退火终点 T | **0.003**（原 0.03，多档下 gap 不收敛） | PITFALLS #19/#23 |
-| 硬 STE 微调 | **CMYK 默认跳过**（毁退火成果，ΔE 6.38→42.04） | PITFALLS #19 |
-| `--gap-min` | 无效（被 l_lab 淹 2-3 个数量级） | PITFALLS #24 |
-| `--cmyk-ste-train` | 无效（STE 梯度与 argmax 不同步） | PITFALLS #25 |
-| `--seed-noise` | 无效（多样性没起来，ΔE 恶化 16.10） | PITFALLS #28 |
-| 邻域窗口损失 | 无效（软域作弊，ΔE 13.56） | PITFALLS #30 |
-| `--ed-fs` 训练前向 | **发散**（ΔE 48-60），勿用 | PITFALLS #33 |
-| `eval.py cmyk --ed` | ★**有效**（推理后处理，多样性 1.77，ΔE 持平） | PITFALLS #35/#36 |
-
-**残余 ΔE 的真因**（PITFALLS #26/#27）：不是 4 档量化误差（4 档可表达
-ICC 目标到 0.32/0.28/0.27/0.11），而是**单像素 argmax 天花板 3-5 ΔE00**——
-模型被逼用非 ICC 覆盖率换取色准。突破靠 ED-FS 推理后处理（亚档位覆盖率
-来自串行机制而非损失鼓励）。
-
-⚠ **但 ED 后处理会把模型贡献洗成 0**（PITFALLS #45）：视觉口径下
-- 无 ED：v4 **7.47** / sd **6.11**（模型有实质贡献，trained vs random 差 **22.5 ΔE**）
-- 有 ED：v4 **2.28** / sd **2.28**（**两个 ckpt 完全一致**）
-消融证明 `ed_fs` 吃的是 ICC 分离真值 `target_cov`，而模型 logits 学的正是
-同一个目标——信息重合，所以模型成了冗余项。且 30 行 numpy 的经典多档 ED
-单独就有 **ΔE00 2.26**（低于 3.0 可用线），反超 NN 硬域 6.07。
-
-⇒ **当务之急不是调配方，是回答「网络到底贡献了什么」**。2-bit 多档本身
-是有价值的（经典多档 ED **2.21** vs 经典 1-bit FS 8.22），但价值来自多档量化
-而非学习。候选方向：网点扩大/坏嘴补偿（RIP 结构上做不到）、色域压缩
-（OOG 均值 16.8%/最高 37%）、把 ED 变成可学习模块。
-
-**剩余差距与下一步**（当前视觉口径 6.11 vs 目标 3.0，2.04 倍）：
-1. ~~全量训练~~ 已完成（4 轮退火，photos_val 硬域 ΔE00 见下表）；
-2. ~~OOG~~ 已缓解（照片化数据；photos_val 实测 OOG 0.3-32.4%，
-   最高 0006 的 32.4%，仍是残余误差来源之一）；
-3. **训练数据升级为 AI 生成**（2026-10-20，最大单项增益）：`gen_ai.py`
-   用 Stable Diffusion 1.5 文生图替代 `gen_data.py` 脚本合成。SD 图
-   训出的模型视觉口径 ΔE00 **7.47→6.11**（-18%，PITFALLS #39）。分布统计量对比
-   证明优势不在颜色分布而在**内容真实性**（PITFALLS #40：SD 图与脚本图的
-   饱和度 0.436 vs 0.415、亮度 0.222 vs 0.206 几乎一致，只有 OOG 差
-   23.8% vs 16.9%，但模型差 18%）⇒ 不要试图用"脚本 + 调色"复现，要照片域
-   就用 SD；
-4. **网点扩大标定**（最大未开采优势）：`calib_target.py` 已生成 256 块标定靶
-   （`out/dotgain/dotgain_target.pdf`），且 `--analyze` 已能输出
-   `measured_lut256.npy`（PITFALLS #41，链路已通、只欠硬件）。等真机打印 →
-   扫描 → `--analyze` → 拷成 `runs/<exp>/lut256.npy` 改 meta `"measured": true`
-   → 接进训练。NN 可把墨水/纸张偏差焊进损失反向补偿，RIP 结构上做不到；
-5. GCR（暗部偏好 K 墨）与通道去相关项尚未实现；
-6. 训练数据量：`data/images_ai` 现有 1000 张 SD 图，但**已训权重只吃了 400 张**
-   （`runs/cmyk_sd/train.log` 记 `[data] 400 张图片`）；用满 1000 张需重训。
-   真实照片 12 张仍未入训练集。
-
-### 权重演进（photos_val 12 张，`eval.py cmyk --limit 12 --rip`，视觉口径 σ=2px）
-
-| 权重 | 训练数据 | 关 ED ΔE00 | 开 ED ΔE00 | 对 gs RIP（关 ED） |
-|---|---|---|---|---|
-| `runs/keep/cmyk_v4_best.pt` | 800 脚本 + 500 灰度 | 7.47 | **2.28** | +1.71（NN 略差） |
-| `runs/cmyk_sd/best.pt` | 400 张 SD 生成图 | **6.11** | **2.28** | +0.34（NN 略差） |
-
-gs RIP 同口径基线 **5.77**。
-
-★**ED 开后两个 ckpt 的 ΔE00 完全相同（2.28）**——这是 PITFALLS #45 的直接证据：
-模型贡献被 ED 完全洗掉。关 ED 时 sd 比 v4 好 1.36（数据升级有效），开 ED 后
-这个优势**消失**。⇒ 报告 NN 能力时必须两组数都报，并注明 ED 的贡献不来自网络。
-⇒ **换数据/配方后必须重测 `--ed` 开/关两遍**，不能沿用"ED 总是更好"（#35 的结论
-只在旧口径/旧权重上成立）。
+- **可复用**：`UNet(levels=4)`、`soft_levels/hard_levels`、`ed_fs`（L 维通用）、
+  `FilmSimulator`（4 档墨量卷积=线性体积，物理上直接成立）。
+- **需新建**：`train_once` 的单通道多档前向 + 膜厚损失（ΔE/ICC 链已删，
+  换 `printer(ink)` 的膜厚 MSE）；推理位图从"0/1 点阵"变"每像素档位号"。
+- **验收指标 = 物理尺度均匀性**：100µm 窗口膜厚 RMS 误差 + 档位混合统计
+  （`texture_stats` 的 loc_std 同源）。不用视觉 ΔE——膜层的裁判是工艺，
+  高频混合被物理平均掉正是设计意图。
+- **先决问题（研究本体）**：膜基线性物理下 ED 已近信息天花板（#11/#45），
+  2-bit 必须回答"网络贡献了什么"。候选增量：档位使用约束、最大连续膜厚、
+  台阶/平坦度损失——ED 结构上不知道的。开工第一步是消融对照
+  （ED(零 logits) vs ED(模型) vs 硬阈值 vs 最近档），证明非冗余再谈调参。
+- 档位标定（阶段 4.③）拿到实测值前，`LEVELS` 先用名义值（2026-10-21 决策）。
 
 ## 文件索引
 
 ```
-train.py             训练入口（默认自动编排；--rounds 1 为单段；--cmyk 全彩 2-bit）
-eval.py              评测+诊断：infer 推理 / one / batch / wedge / data / norm / compare
-                     / cmyk（ΔE00 + 四通道 inkcov；--rip 工业基线；--ed ED-FS 后处理）
-webapp.py            网页版对照（单图/多图上传）
-gen_data.py          合成数据生成（--rgb 彩色；--icc 走 ICC 分离；--sat/--gamma 照片化）
-calib_target.py      网点扩大标定靶生成 + 扫描分析（256 块 4 档全组合）
-calc_sigma.py        喷头参数 + 实测铺展 -> σ 计算器（出处可溯）
-halftone/model.py    U-Net + STE 二值化 + 多档（in_ch/out_ch/levels）
-halftone/printer.py  可微打印模拟器（1-bit；CMYK 路线不用）
-halftone/cmyk.py     色彩层：LUT16/LUT256 + Neugebauer + sRGB↔Lab↔CMYK（ICC）
-halftone/ed_fs.py    FS 式逐列串行误差扩散（推理后处理，PITFALLS #32/#35/#42）
-halftone/losses.py   HVS 低频损失 + 孤立点惩罚（CMYK 联合掩码）
-halftone/data.py     数据加载（RgbCrops，灰度自动转 3 通道）
-data/images/         训练图
-runs/                训练产物
+train.py             训练入口（默认自动编排；--rounds 1 为单段）
+eval.py              评测+诊断：infer / one / batch / wedge / data / norm / compare
+webapp.py            网页版对照（1-bit 三路线）
+gen_data.py          合成灰度数据
+calc_sigma.py        喷头参数 + 实测铺展 -> σ 计算器
+halftone/model.py    U-Net + STE 二值化 + 多档 levels 参数（2-bit film 复用）
+halftone/printer.py  可微打印模拟器（FilmSimulator 主线 / PrinterSimulator 纸基保留）
+halftone/ed_fs.py    FS 式逐列串行误差扩散（推理后处理，#32/#35/#42）
+halftone/losses.py   HVS 低频损失 + 孤立点惩罚（1-bit 单通道）
+halftone/data.py     数据加载（RgbCrops）
+data/images/         训练图（灰度）
+runs/                训练产物（cmyk_* 为 CMYK 历史归档，gitignore 不入库）
 out/                 推理产物
 ```

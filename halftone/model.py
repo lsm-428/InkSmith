@@ -29,11 +29,10 @@ class UNet(nn.Module):
     （见 PITFALLS #12）；`bilinear` 更平滑，倾向像素级纹理。
     该值随 ckpt 存进 args，推理端自动重建——改它必须重训，旧权重不兼容。
 
-    in_ch: 输入通道数（1=灰度，3=sRGB）。
-    out_ch: 输出通道数（4 = CMYK）。
-    levels: 每通道墨量档数。1 = 灰度 1-bit 老路；>1 = 多档墨量路线，
+    in_ch/out_ch: 通道数（当前主线 1=灰度膜厚）。
+    levels: 每通道墨量档数。1 = 1-bit 老路；>1 = 多档墨量路线（2-bit film），
         每通道输出 levels 个 logits，softmax 成互斥档位概率
-        （多档下互斥 softmax 是唯一正确形式，见 halftone/cmyk.py）。
+        （多档下互斥 softmax 是唯一正确形式）。
     """
 
     def __init__(self, base=32, up="nearest", in_ch=1, out_ch=1, levels=1):
@@ -82,7 +81,7 @@ def soft_levels(logits, temperature):
     训练用退火 T；推理/硬域时 T 极小，等价于 one-hot argmax。
     多档必须用**互斥 softmax**而不是独立 sigmoid——后者会把
     「软期望墨量 = 目标」与「硬 argmax 落对档」混为一谈（实测软期望能由
-    非整数档凑出而硬 argmax 全错，见 halftone/cmyk.py 相关 PITFALLS）。
+    非整数档凑出而硬 argmax 全错，PITFALLS #17/#23）。
     """
     return torch.softmax(logits / temperature, dim=-1)
 

@@ -1,32 +1,31 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with this repository.
 
 **项目指引已迁移到 [AGENTS.md](AGENTS.md)** —— 命令、架构、训练铁律、工程环境都在那里，
-本文件不再重复维护，避免两份文档漂移。请直接读 `AGENTS.md`。
+本文件不再重复维护。请直接读 `AGENTS.md`。
 
 补充说明（AGENTS.md 未展开的部分）：
 
-- 项目目标：神经半色调（learned halftoning）——NN 输入连续调图，直接输出喷墨可打印的
-  位图，跳过传统误差扩散。项目名 **墨匠 InkSmith**（*学会打印，而不是渲染*）。
-  两条路线并存：
-  - **1-bit 灰度**（`--printer film/paper`）：可微打印模拟器焊进损失函数，
-    反向补偿网点扩大。**推理必须加 `--ed`**：硬阈值 14.80dB（输 FS 25.82），
-    ED-FS 后处理 24.67dB，但**对 FS 25.82 仍差 1.15（12/12 全输）**、对 GS 打平；
-    且消融显示模型权重对此只贡献 +0.02dB（PITFALLS #43/#45）；
-  - **CMYK 2-bit 全彩**（`--cmyk`，2026-10-20 已收敛）：ICC 标定 LUT256 +
-    Neugebauer + Lab ΔE2000，无可微打印模拟器（网点扩大未标定）。
-    当前 `runs/cmyk_sd/best.pt` 在 photos_val **视觉口径（σ=2px）ΔE00 6.11**，
-    gs 工业 RIP 5.77——**同级，NN 略差**；加 `--ed` 后 2.28，但 v4 权重开 ED
-    同样是 2.28（PITFALLS #45：模型贡献被 ED 洗成 0）。逐像素口径的
-    「8.92 vs 29.87 / 赢 20.98」是 PITFALLS #44 的错误口径，勿引用。
-- 核心设计：**打印机物理焊进损失函数**。训练时前向经过可微打印模拟器，loss 在
-  "模拟纸上效果 vs 目标图"上算，网络因此学会反向补偿网点扩大；推理时只做硬阈值，
-  不走模拟器。`sigma`/`gain`/`sigma-um` 是物理参数（对应真机标定），不是画质调参旋钮。
+- 项目目标：神经半色调（learned halftoning），**落地场景是膜层打印**（非吸收基材上
+  复刻连续调厚度图），不是传统数码打印。主线 **1-bit film**（`--printer film`），
+  下一步 **2-bit film**（单通道 4 档墨量）。
+- **CMYK 2-bit 全彩路线已于 2026-10-21 整体移除**（代码删除）。它的研究结论完整
+  归档在 PITFALLS.md #16–#30/#35–#48，移除决策链见 #50：在"复刻 ICC 连续调分离"
+  目标下，网络理论天花板 = 经典多档误差扩散（ΔE00 2.21），模型贡献被 ED 洗成 0，
+  且项目裁判是膜层工艺而非彩色数码打印——该路线没有增量价值。历史权重在磁盘
+  （`runs/cmyk_sd*/`、`runs/keep/`，gitignore 不入库），复现其 ΔE 数字须 checkout
+  git 提交 `5714501`。
+- 核心设计：**打印物理焊进损失函数**。训练时前向经过可微打印模拟器（膜基=线性体积
+  叠加，`FilmSimulator`），loss 在"模拟膜厚 vs 目标图"上算；推理只做硬阈值/ED-FS。
+  `sigma-um`/`sigma`/`dpi` 是物理参数（实测可溯，`calc_sigma.py`），不是画质调参旋钮。
+- **1-bit film 的已证结论**（引用数字前必读）：膜基线性物理下逐像素决策赢不了 FS
+  （PITFALLS #11）；`--ed` 后 24.67 vs FS 25.82（差 1.15，#43），模型权重贡献
+  +0.02dB（#45）。"NN 在 1-bit film 上冗余"是结构性负结果，不是没调好参。
 - **dithering 的正确来源**：不是损失能鼓励出来的，是决策机制的属性。
-  `halftone/ed_fs.py`（FS 式串行误差扩散）作**推理后处理**使用；当训练前向会发散
-  （PITFALLS #33）。1-bit 与 CMYK 都靠它。**但 ED 会洗掉模型贡献**：视觉口径下
-  sd 6.11→2.28、v4 7.47→2.28（两者完全相同），零 logits 也得到同样的 2.28
-  （PITFALLS #45）。所以报能力必须关/开 ED 两组都给，别把 ED 的成绩算作网络能力。
-- 长期路线细节（Neugebauer 叠印、通道去相关、TAC 上限、GCR）见 `WORKFLOW.md`
-  阶段 5（**已实现、训练已收敛，但仍未达可用线**，不再是"待做"）。
+  `halftone/ed_fs.py`（FS 式串行误差扩散）作**推理后处理**；当训练前向会发散
+  （#33）；权重和必须严格为 1（#42，否则覆盖率两端塌陷）。
+- 评测指标：1-bit 用硬阈值 PSNR（唯一可信，#4/#14）+ `wedge` 行墨量 std（#12）。
+  **2-bit film 计划改用物理尺度均匀性**（100µm 膜厚 RMS + 档位混合统计）——
+  膜层被工艺平均，视觉 ΔE 口径（#44 的教训）不适用。
+- 长期路线细节见 `WORKFLOW.md` 阶段 5（2-bit film 规划）与 README 路线图。

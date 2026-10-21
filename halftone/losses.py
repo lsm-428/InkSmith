@@ -26,23 +26,8 @@ class HVSLoss(nn.Module):
         return F.mse_loss(self._blur(printed), self._blur(target))
 
 
-def isolated_dot_penalty(ink, joint=True):
-    """惩罚孤立墨点和孤立白洞：单像素孤点喷墨不可靠，也易堵头。
-
-    `joint=True`（CMYK 默认）：先把四通道合成**联合掩码**（任一通道有墨）
-    再判孤立。`joint=False`：逐通道分别判后取平均（1-bit 老路行为）。
-
-    为什么 CMYK 要联合判定（PITFALLS #21）：逐通道判据下，C 通道的一个
-    孤点旁边可能有 M 的墨——人眼看到的是一块有色斑点，但 C 和 M 各自
-    「都不孤立」，惩罚因此失效。实测孤立点率飙到 1.112%（1-bit 时代
-    0.002% 的 500 倍），而 ΔE 同时在降：模型在用孤立墨点换色准。
-    联合掩码的语义是「这个像素有没有墨」，与视觉/物理缺陷一致。
-    """
-    if joint and ink.dim() == 4 and ink.shape[1] > 1:
-        ink = (ink.sum(1, keepdim=True) > 0).float()
-    elif ink.dim() == 4 and ink.shape[1] > 1:
-        return sum(isolated_dot_penalty(ink[:, c:c + 1], joint=False)
-                   for c in range(ink.shape[1])) / ink.shape[1]
+def isolated_dot_penalty(ink):
+    """惩罚孤立墨点和孤立白洞：单像素孤点喷墨不可靠，也易堵头（1-bit 单通道）。"""
     k = torch.ones(1, 1, 3, 3, device=ink.device)
     neighbors = F.conv2d(ink, k, padding=1) - ink
     iso_ink = ink * torch.clamp(1.0 - neighbors, min=0.0)

@@ -23,7 +23,6 @@ tgt 0.067→0.000、0.867→1.000（正确应为 0.067/0.867）。
 覆盖率精度是 ED 存在的前提，误差扩散权重和必须等于 1。
 """
 import sys, torch, torch.nn.functional as F; sys.path.insert(0, '.')
-from halftone.cmyk import LEVELS
 torch.set_num_threads(20)
 
 
