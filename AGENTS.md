@@ -34,7 +34,8 @@ Python + PyTorch（仅作张量/卷积后端，**无训练、无权重**），�
 **gen_ai.py**（SD 内容图，备用）/ **calc_sigma.py**（σ 计算，出处可溯）。
 
 ```bash
-uv sync                       # torch 2.7.1+cu118，pyproject 钉死
+uv sync                       # 主线依赖（torch 2.7.1+cu118，pyproject+uv.lock 钉死）
+uv sync --extra gen-ai        # 需要 gen_ai.py 时才加（diffusers/transformers/accelerate，#53）
 
 # === 推理（主引擎 ED-FS；无需任何权重/ckpt，物理参数即 CLI，默认=已验证配方）===
 uv run python eval.py infer 图.jpg --out out/photo     # ED-FS 位图+预览
@@ -110,6 +111,9 @@ gen_ai.py       SD 内容图生成（备用，主线不依赖）
 - **沙箱会藏 GPU**：判据 `/proc/driver/nvidia/version` + `lsmod|grep nvidia`（#20）。
 - **同一时间只跑一个 uv 进程**（缓存锁，先 `pgrep -af uv`，#10）；锁冲突用
   `.venv/bin/python`。
+- **每个包必须有声明出处**（#53）：手工 `uv pip install` 的包不进锁，重建
+  `.venv` 会静默丢。删 `.venv` 前先做体检：`pip list` 与 `uv.lock` 差集非空
+  即有声明缺失。`gen_ai` 依赖在可选组：`uv sync --extra gen-ai`。
 - 目录：评测集 `data/photos_val/`（12 张，唯一数据集）；`runs/` 已清空；产物
   `out/`。`data/`、`runs/`、`out/`、`.venv/` 都在 .gitignore。
 - ghostscript 不吃 PNG，inkcov 前需 PIL 包 PDF（`eval.py one` 已处理）。

@@ -15,6 +15,9 @@ NN 训练已于 #52 整体移除，本脚本保留用于给 ED 引擎造真实�
     uv run python gen_ai.py --n 20 --steps 15 --size 512 --dry-run # 小批试跑
 
 注意：
+- 依赖是可选组（主线不需要）：先 `uv sync --extra gen-ai`（#53：此前这批包
+  是手工装的、pyproject 未声明，换机器 uv sync 静默装不出来）。
+- 需 NVIDIA GPU + CUDA（代码固定 .to("cuda")），CPU 环境跑不了。
 - 首次运行需联网下载 SD1.5 权重（约 4GB，走 hf-mirror）；之后纯本地。
 - Quadro P2000 上 512² 20 步约 28 s/张（FP16 + attention slicing）。
   100 张 ≈ 47 min，500 张 ≈ 3.9 h，建议后台跑。

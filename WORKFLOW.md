@@ -11,11 +11,15 @@
 ## 阶段 0：环境（一次性）
 
 ```bash
-uv sync        # 按 pyproject.toml 装 torch 2.7.1+cu118
+uv sync        # 按 pyproject.toml + uv.lock 装 torch 2.7.1+cu118（主线依赖）
+uv sync --extra gen-ai   # 需要跑 gen_ai.py 时再加 SD 依赖（diffusers 等 ~115M）
 ```
 
 torch 在这里只是张量/卷积后端（ED 的列循环 + 评测的 2D 卷积），**推理纯 CPU
 毫秒级**，无 GPU 可跑全部命令。沙箱可能遮蔽 GPU（判据 PITFALLS #20）。
+
+**环境体检**（#53：手工装过的包不进锁，重建环境会静默丢）：`pip list` 与
+`uv.lock` 做差集，非空即有声明缺失——删 `.venv` 重前必须先跑这条。
 
 ## 阶段 1：评测内容图
 

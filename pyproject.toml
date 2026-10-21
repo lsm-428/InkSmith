@@ -10,6 +10,17 @@ dependencies = [
     "pillow>=11.0.0",
 ]
 
+# gen_ai.py（SD 内容图生成，备用路线）的依赖：主线 eval/webapp/ed_fs 不需要。
+# 2026-10-21 前这批包是手工 uv pip install 进去的、声明缺失——换机器 uv sync
+# 会静默装不出来，gen_ai 成废件。现提为可选组：需要时 `uv sync --extra gen-ai`。
+# 版本钉死为当前实测可用组合（diffusers×transformers 兼容矩阵会漂）。
+[project.optional-dependencies]
+gen-ai = [
+    "diffusers==0.41.0",
+    "transformers==5.20.1",
+    "accelerate==1.15.0",
+]
+
 [[tool.uv.index]]
 name = "pytorch"
 url = "https://download.pytorch.org/whl/cu118"

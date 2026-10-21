@@ -1257,3 +1257,34 @@ PSNR，std 维度翻出"冗余→有害"的定性变化；打平 ≠ 无害。�
 下已被解析机制覆盖（密度 = ED 权重和=1 精确满足；排布 = 串行误差扩散是 FS
 族经典解，更优解是蓝噪声/DBS 类优化器）——学习问题退化为工程问题；识别
 "这个问题不需要学习"与"证明网络无增益"是同等重要的负结果。
+
+### 53. `gen_ai.py` 的依赖从未声明：手工 `uv pip install` 的包不在锁里，换机器静默装不出来
+
+**症状**（2026-10-21 清理 `.venv` 时暴露）：site-packages 里有
+diffusers/transformers/accelerate（~115M）等一整套，`pyproject.toml` 与
+`uv.lock` 却完全没有——当年为跑 SD 手工 `uv pip install`，绕过声明体系。
+后果：任何"重建环境"的操作（换机器 `uv sync`、删 `.venv` 重来）都会
+**静默**把 gen_ai.py 变成 import 崩的废件，而回归测试全绿（主线不碰这些包），
+损坏不可见。附带发现同类漂移：matplotlib（26M，全库 0 引用，纯遗留）。
+
+**判据（可复用的体检命令）**：装了但不在锁里的顶层包
+```bash
+.venv/bin/python -m pip list --format=freeze | sed 's/==.*//;s/_/-/g' | sort -u \
+  > /tmp/inst.txt
+grep -oP 'name = "\K[^"]+' uv.lock | sed 's/_/-/g' | sort -u > /tmp/lock.txt
+comm -23 /tmp/inst.txt /tmp/lock.txt     # 非空即有声明缺失（注意命名变体假阳性）
+```
+
+**修法**：`gen_ai` 的依赖提入 pyproject **可选组** `[project.optional-dependencies]
+gen-ai = [diffusers==0.41.0, transformers==5.20.1, accelerate==1.15.0]`（版本钉死
+当前实测可用组合——diffusers×transformers 兼容矩阵会漂）。主线不拖这 115M：
+`uv sync` 默认不装，需要 gen_ai 时 `uv sync --extra gen-ai`。重建 `.venv` 后
+`pip list` 对比 `uv.lock` **零孤儿**，声明与实际一致；gen_ai import 验证通过，
+主线回归（batch 24.64/25.82/24.67、wedge std 0.0027）逐位不变。torch 仍
+2.7.1+cu118（按用户决定不动版本，`.venv` 5.6G→5.4G，省掉的正是真孤儿包）。
+
+**教训**：**手工装包 = 给环境埋雷**，且雷的位置最阴险——它不坏当前功能，
+只坏"重建"这个动作，而重建恰恰是换机器/清理时必做的。规矩：环境里每个包
+必须有声明出处（主依赖/可选组/锁文件），`pip list` 与 `uv.lock` 的差集是
+环境的体检项；删 `.venv` 前**先做这个 diff**，否则会把"不可复现"洗白成
+"新环境本来就这样"。
