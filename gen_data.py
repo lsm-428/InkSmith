@@ -1,7 +1,7 @@
 """生成合成训练图：渐变/斑块/分形噪声/几何形状/条纹/混合。
 
 半色调模型需要见过各种频率成分：低频渐变、中频纹理、锐利边缘、高频周期图案。
-输出 PNG 到 data/images/。
+输出 PNG 到 data/images_gray/。
 """
 import argparse
 import math
@@ -115,7 +115,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--n", type=int, default=500)
     p.add_argument("--size", type=int, default=512)
-    p.add_argument("--out", default="data/images")
+    p.add_argument("--out", default="data/images_gray")
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 

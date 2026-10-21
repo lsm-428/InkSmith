@@ -58,33 +58,19 @@ def fit(img, max_side=MAX_SIDE):
 
 # ---------------------------------------------------------------- 1-bit 路线
 
-_CACHE = {}
+GRAY_MODE = True    # 启动时从 ckpt args 判定（见 main），避免每请求 torch.load
 
 
-def get_model(ckpt, dpi=None):
-    key = (ckpt, dpi)
-    if key not in _CACHE:
-        _CACHE[key] = load_model_and_printer(ckpt, dpi=dpi)
-    return _CACHE[key]
+def _triplet(img, dpi, ckpt, ed=False):
+    return triplet(img, ckpt, dpi, ed=ed)
 
 
-def _triplet(img, dpi, ckpt):
-    global CKPT
-    CKPT = ckpt
-    return triplet(img, ckpt, dpi)
-
-
-def _gray_mode(ckpt):
-    """ckpt 是否 1-bit 灰度路线（决定 wedge/convert 是否可用）。"""
-    _m, _p, a, _d = load_model_and_printer(ckpt)
-    return not a.get("cmyk")
-
-
-def process_one(name, dataurl, ckpt, dpi=None):
-    """1-bit 灰度三路线对照（原有逻辑）。"""
+def process_one(name, dataurl, ckpt, dpi=None, ed=True):
+    """1-bit 灰度三路线对照。ed=True（默认）走 ED-FS 后处理——铁律3：
+    硬阈值逐像素决策在膜基下赢不了 FS，网页对照必须与 eval --ed 同口径。"""
     t0 = time.time()
     img, scaled = fit(decode(dataurl).convert("L"))
-    inks, prints, target, a = _triplet(img, dpi, ckpt)
+    inks, prints, target, a = _triplet(img, dpi, ckpt, ed=ed)
     ink2img = lambda ink: np.uint8((1 - ink[0, 0].cpu().numpy()) * 255)
     clip = lambda x: x[0, 0].cpu().numpy().clip(0, 1)
     return {
@@ -115,7 +101,7 @@ def process_one(name, dataurl, ckpt, dpi=None):
     }
 
 
-def wedge(n_levels=16, dpi=None, ckpt=None):
+def wedge(n_levels=16, dpi=None, ckpt=None, ed=True):
     """1-bit 灰度尺诊断：分段覆盖率偏差（模型最敏感的体检项）。"""
     t0 = time.time()
     n_levels = max(2, min(32, n_levels))
@@ -124,7 +110,7 @@ def wedge(n_levels=16, dpi=None, ckpt=None):
     arr = np.concatenate([np.full((seg, seg), l, np.float32) for l in levels],
                          axis=1)
     img = Image.fromarray((arr * 255).astype("uint8"), "L")
-    inks, prints, target, a = _triplet(img, dpi, ckpt)
+    inks, prints, target, a = _triplet(img, dpi, ckpt, ed=ed)
     dev = lambda t, k: t[0, 0, :, k * seg:(k + 1) * seg].mean().item()
     rows = [{"level": round(float(l), 3),
              "nn": round(dev(prints["nn"], k), 3),
@@ -367,7 +353,7 @@ class Handler:
                 try:
                     ln = int(self.headers["Content-Length"])
                     req = json.loads(self.rfile.read(ln))
-                    if not _gray_mode(CKPT):
+                    if not GRAY_MODE:
                         raise ValueError(
                             "CMYK 路线已于 2026-10-21 停止支持，请用 1-bit ckpt")
                     if self.path == "/api/wedge":
@@ -389,13 +375,19 @@ class Handler:
 
 
 def main():
-    global CKPT
+    global CKPT, GRAY_MODE
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=8123)
     p.add_argument("--ckpt", default="runs/onebit/best.pt")
     args = p.parse_args()
     CKPT = args.ckpt
     model, _printer, a, _device = load_model_and_printer(CKPT)
+    # 历史 CMYK 权重的特征：out_ch=4 或 levels>1（1-bit 主线 ckpt 恒 out_ch=1、
+    # levels=1）。启动时判一次即可，旧版每个 POST 重新 torch.load 纯属浪费。
+    GRAY_MODE = a.get("out_ch", 1) == 1 and a.get("levels", 1) == 1
+    if not GRAY_MODE:
+        raise SystemExit("CMYK 路线已于 2026-10-21 停止支持，请用 1-bit ckpt"
+                         "（复现历史评测须 checkout 5714501）")
     kind = f"1-bit（printer={a.get('printer', 'paper')}）"
     H = Handler().H
     from http.server import HTTPServer

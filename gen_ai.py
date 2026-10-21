@@ -8,15 +8,16 @@
 （合成验证集 ΔE 7.36 vs 真实照片 15.05）。SD 出的是真实照片分布。
 
 用法：
-    uv run python gen_ai.py --n 100 --out data/images_ai          # 文生图
-    uv run python gen_ai.py --n 100 --init data/images            # 图生图（保留结构）
+    uv run python gen_ai.py --n 100 --out data/images_ai          # 文生图（目录自动创建）
+    uv run python gen_ai.py --n 100 --init <种子图目录>            # 图生图（保留结构）。
+    #   原示例 data/images 已随 CMYK 数据于 2026-10-21 删除；任意存在的图片目录均可作种子
     uv run python gen_ai.py --n 20 --steps 15 --size 512 --dry-run # 小批试跑
 
 注意：
 - 首次运行需联网下载 SD1.5 权重（约 4GB，走 hf-mirror）；之后纯本地。
 - Quadro P2000 上 512² 20 步约 28 s/张（FP16 + attention slicing）。
   100 张 ≈ 47 min，500 张 ≈ 3.9 h，建议后台跑。
-- 输出是 sRGB PNG；训练管线内部会做 ICC 分离，这里**不做**色彩管理。
+- 输出是 sRGB PNG，不做色彩管理（原 ICC 分离链路已随 CMYK 路线删除）。
 - 自动过滤 SD 失败模式（近黑/近白/极低方差），失败的 seed 会重试。
 """
 import argparse

@@ -1,7 +1,7 @@
 """训练：单次训练 + 自动多轮编排（两种模式，同一份实现）。
 
 模式（默认自动编排，这是推荐入口）：
-  uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/film
+  uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/onebit
 
   自动跑"退火多轮 -> 硬 STE 微调"，每轮后验证并按规则调参：
     1. 孤立点过多 -> w_iso 加倍（封顶 0.2）
@@ -137,10 +137,11 @@ def train_once(args, device, out, log, *, epochs, lr, w_iso, w_bin,
             target = target.to(device)
             if target.shape[1] == 3:
                 target = target[:, :1]   # 1-bit 只吃灰度通道（RgbCrops 统一返回 3 通道）
-            # Nyquist 种子噪声：给输入叠加高频（棋盘）扰动，逼模型把抖动纹理
-            # 学出来（PITFALLS #13 的 1-bit 待试项；#27 实测 CMYK 下邻域档位
-            # 多样性仅 1.1，模型在做逐像素独立决策，没利用空间自由度）。
-            # 只加在输入上，不加在目标上——网络必须自己决定如何响应。
+            # Nyquist 种子噪声：给**模型输入**叠加高频（棋盘）扰动，逼模型把
+            # 抖动纹理学出来（PITFALLS #13 的 1-bit 待试项；#27 实测 CMYK 下
+            # 邻域档位多样性仅 1.1，模型在做逐像素独立决策，没利用空间自由度）。
+            # 只加在输入上，损失目标仍用干净图——网络必须自己决定如何响应扰动。
+            x_in = target
             if seed_noise > 0:
                 nyq = torch.stack(
                     torch.meshgrid(
@@ -150,8 +151,8 @@ def train_once(args, device, out, log, *, epochs, lr, w_iso, w_bin,
                 nyq = (nyq.float() * 2 - 1)[None, None]      # (1,1,H,W) ±1 棋盘
                 amp = seed_noise * (0.5 + 0.5 * torch.rand(
                     target.shape[0], 1, 1, 1, device=device))
-                target = (target + nyq * amp).clamp(0, 1)
-            logits = model(target)
+                x_in = (target + nyq * amp).clamp(0, 1)
+            logits = model(x_in)
             ink = (hard_binarize(logits) if hard_ste
                    else soft_binarize(logits, temp))
             if rand_dpi:
@@ -228,7 +229,9 @@ def main():
     p.add_argument("--iso-threshold", type=float, default=0.02,
                    help="孤立点率阈值，超过则 w_iso 加倍")
 
-    p.add_argument("--data", default="data/images", help="图片文件夹，空则合成数据冒烟")
+    p.add_argument("--data", default="data/images_gray",
+                   help="训练图文件夹（1-bit 主线=脚本合成灰度）；"
+                        "编排模式空则自动生成，--rounds 1 空则合成图冒烟")
     p.add_argument("--batch", type=int, default=16)
     p.add_argument("--size", type=int, default=256)
     p.add_argument("--length", type=int, default=2000, help="每 epoch 样本数")
@@ -260,7 +263,9 @@ def main():
     p.add_argument("--out", default="runs/onebit",
                    help="产物目录（不同物理模型用不同目录，勿混）")
     p.add_argument("--smoke", action="store_true", help="小数据快速冒烟")
-    p.add_argument("--resume", action="store_true", help="从 out/last.pt 续训")
+    p.add_argument("--no-resume", dest="resume", action="store_false",
+                   help="不从 out/last.pt 续训。默认续训（与自动编排一致，"
+                        "见 PITFALLS #38）；从零训练必须显式加本参数")
     args = p.parse_args()
 
     if args.smoke:
@@ -281,11 +286,13 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # 数据自备：目录空则生成（train.py 直接跑时才有意义，编排模式统一在这里保证）
+    # 检查的是 args.data（此前硬编码 data/images：默认目录若存在但装着 CMYK
+    # 时代的彩色旧图，非空检查形同虚设，会静默拿 RGB 旧集的 0 通道当灰度训练）
     if not args.smoke:
-        if not list(Path("data/images").glob("*.png")):
-            log("[data] data/images 为空，生成合成训练图")
-            subprocess.run([sys.executable, "gen_data.py", "--n", "500"],
-                           check=True)
+        if not list(Path(args.data).glob("*.png")):
+            log(f"[data] {args.data} 为空，生成合成训练图")
+            subprocess.run([sys.executable, "gen_data.py", "--n", "500",
+                            "--out", args.data], check=True)
         if not list(Path("data/val").glob("*.png")):
             log("[data] data/val 为空，生成验证集（种子 123）")
             subprocess.run([sys.executable, "gen_data.py", "--n", "30",

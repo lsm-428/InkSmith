@@ -1,7 +1,8 @@
 """FS 式逐列串行误差扩散：工业 RIP 的真正机制（PITFALLS #32 实测成功）。
 
-与 `ed.py::ed_iterate`（迭代式，失败）的区别：那里把"已打印邻域"用于
-算偏置，反馈是死区的；这里把**量化误差本身**按权重实际传递给后续像素，
+与**已删除的**迭代式 ED 的区别（原 `halftone/ed.py::ed_iterate`，git 提交
+5714501 可查，结论见 PITFALLS #33）：那里把"已打印邻域"用于算偏置，
+反馈是死区的；这里把**量化误差本身**按权重实际传递给后续像素，
 邻域被迫选不同档位补偿 -> 亚档位覆盖率是机制的必然结果。
 
 按列串行（W 步 python 循环），列内 H 行一次性决策。因为整列同时决策，
@@ -22,8 +23,7 @@ tgt 0.067→0.000、0.867→1.000（正确应为 0.067/0.867）。
 
 覆盖率精度是 ED 存在的前提，误差扩散权重和必须等于 1。
 """
-import sys, torch, torch.nn.functional as F; sys.path.insert(0, '.')
-torch.set_num_threads(20)
+import torch
 
 
 def ed_fs(logits, target_cov, levels, k_r=7/16, k_dr=5/16, k_ur=3/16,

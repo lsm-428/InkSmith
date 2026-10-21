@@ -198,11 +198,14 @@ def cmd_infer(args):
         ink = onebit_ink(logits, cov_tg, ed=use_ed)[..., :h, :w]   # 裁回原尺寸
         printed = printer(ink)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    bitmap = (ink[0, 0].cpu().numpy() * 255).astype(np.uint8)      # 1=墨
+    # 墨=黑（0=墨）：与 cmd_one/webapp 落盘口径一致，可直接喂 RIP/inkcov。
+    # 此前存 ink*255（墨=白）却打印「1=墨」，是全库唯一极性相反的产物（#43
+    # 同族教训：口径不一致会白送/倒送结论）。
+    bitmap = ((1 - ink[0, 0].cpu().numpy()) * 255).astype(np.uint8)   # 0=墨
     preview = (printed[0, 0].cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
     Image.fromarray(bitmap, mode="L").save(f"{args.out}_bitmap.png")
     Image.fromarray(preview, mode="L").save(f"{args.out}_preview.png")
-    print(f"二值位图: {args.out}_bitmap.png（1=墨，直接可打）")
+    print(f"二值位图: {args.out}_bitmap.png（墨=黑/0，直接可打）")
     print(f"模拟打印: {args.out}_preview.png（经扩散模型后的纸上效果）")
 
 
@@ -410,8 +413,10 @@ def cmd_compare(args):
     tot = {"a": [], "b": []}
     for p in imgs:
         img = Image.open(p).convert("L")
-        _, pa, ta, _ = triplet(img, args.a, args.dpi)
-        _, pb, tb, _ = triplet(img, args.b, args.dpi)
+        # ed 必须透传（铁律3：推理口径 = ED-FS）。此前 --ed 被 ckpt_arg 注册
+        # 却从未传入，compare 静默比的是硬阈值口径，两 ckpt 结论建立在错机制上。
+        _, pa, ta, _ = triplet(img, args.a, args.dpi, ed=args.ed)
+        _, pb, tb, _ = triplet(img, args.b, args.dpi, ed=args.ed)
         sa, sb = psnr(pa["nn"], ta), psnr(pb["nn"], tb)
         fa, fb = psnr(pa["fs"], ta), psnr(pb["fs"], tb)
         tot["a"].append(sa - fa)
@@ -461,7 +466,7 @@ def main():
     w.set_defaults(func=cmd_wedge)
 
     d = sub.add_parser("data", help="训练集平坦区与灰阶分布")
-    d.add_argument("--dir", default="data/images")
+    d.add_argument("--dir", default="data/images_gray")
     d.add_argument("--size", type=int, default=256)
     d.add_argument("--n", type=int, default=256)
     d.add_argument("--flat-std", type=float, default=0.02)

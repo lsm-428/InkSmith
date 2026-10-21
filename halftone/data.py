@@ -16,7 +16,7 @@ class RgbCrops(Dataset):
     灰度图会被转成 3 通道（值复制），1-bit 训练路径取第 0 通道。
     """
 
-    def __init__(self, root="data/images", size=256, length=2000):
+    def __init__(self, root="data/images_gray", size=256, length=2000):
         self.paths = sorted(
             p for p in glob.glob(f"{root}/**/*", recursive=True)
             if p.lower().endswith(_EXTS)
