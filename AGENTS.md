@@ -1,8 +1,9 @@
 # AGENTS.md
 
 **墨匠 InkSmith** —— *学会打印，而不是渲染*。膜层半色调：**ED-FS 误差扩散引擎**
-把连续调厚度图转成 one-pass 可打印 1-bit 位图。目标 = 膜层打印（非吸收基材上
-复刻厚度图），主线 **1-bit film**，下一步 **多档 film**（多档 ED + 离线优化）。
+把连续调厚度图转成 one-pass 可打印位图。目标 = 膜层打印（非吸收基材上
+复刻厚度图）。主线 film 灰度：**1-bit 现役基线，多档（`--drops N`）已接线并
+追平 FS（#55），待真机档位标定落地**。
 
 > 2026-10-21 同日四次手术，详录 PITFALLS：#50 CMYK 全彩路线移除（含权重/数据）、
 > #51 手术复核修复 8 处静默失真、#52 **NN 整体拆除**、#53 gen_ai 依赖声明缺失、
@@ -13,9 +14,15 @@ Python + PyTorch（**仅作张量/卷积后端，无训练、无权重**），�
 无单元测试。回归 = `eval.py batch` + `eval.py wedge`（毫秒级，无权重依赖）。
 
 **现役基线**（2026-10-21 实测，photos_val 12 张，film σ=25µm@1440dpi）：
-**ED-FS 24.64 | PIL FS 25.82 | GS 24.67**（ED vs FS −1.18，vs GS −0.03）。
-**现役最优仍是 PIL FS**：差距在机制（`ed_fs` 逐列并行把 2D 误差流压成 1D，#42/#52），
-不在缺网络。**主战场 = ED 引擎升级（蛇形逐行/2D 核），验收线 = 纯 ED ≥ FS。**
+
+| 配置 | batch ED | vs FS 25.82 | 100µm 膜厚 RMS |
+|---|---|---|---|
+| N=1（1-bit，默认回归口径） | 24.64 | −1.18 | 0.39µm |
+| **N=4（多档，已接线 #55）** | **25.81** | **−0.01（追平）** | 0.32µm |
+
+**ED 的 1-bit 缺口大头是量化步长不是 1D 机制**（#55）——档位加密后单调收敛到 ~0，
+蛇形 2D 核升级的预期收益需在 N=4 基线上**重新定价**。GS 基线 24.67；N≥4 后加档
+饱和（#26），实用点 N=4。回归 = `batch`（N=1）须逐位 24.64/25.82/24.67。
 
 ## 文档优先级与分工（会冲突，按此顺序信）
 
@@ -37,9 +44,10 @@ uv sync --extra gen-ai        # 需要 gen_ai.py 时才加（diffusers 等 ~115M
 # 推理（主引擎 ED-FS；无权重/ckpt，物理参数即 CLI，默认已验证配方）
 uv run python eval.py infer 图.jpg --out out/photo   # ED-FS 位图 + 模拟预览
 uv run python eval.py one   图.jpg                   # 单图三方 + inkcov 审计
-uv run python eval.py batch                          # 批量三方（默认 photos_val）
+uv run python eval.py batch                          # 批量三方（默认 photos_val，N=1 回归口径）
+uv run python eval.py batch --drops 4                # 多档 film（25.81 追平 FS，#55）
 uv run python eval.py batch --dpi 2880               # 换打印分辨率（σ=2.83px）
-uv run python eval.py wedge                          # 灰度尺分段偏差+条纹检测（改引擎前必跑）
+uv run python eval.py wedge                          # 灰度尺偏差+条纹+100µm RMS（改引擎前必跑）
 
 uv run python webapp.py       # 网页对照（ED/FS/GS，端口 8123）
 uv run python calc_sigma.py   # σ 出处计算（读仓库外 printheads.json）
@@ -108,13 +116,16 @@ PITFALLS 历史条目里的 `halftone/*.py` 路径是当时事实，不改。）
 - ghostscript 不吃 PNG（#7）；`calc_sigma.py` 读仓库外
   `../InteractivePrintingSimulator/printheads.json`，换机器会缺文件。
 
-## 多档 film 路线（下一步）
+## 多档 film 路线（#55 已接线 N 档，剩余工作）
 
-`ed_fs` 的 L 维已通用（`levels` 任意），缺的是：
-1. **引擎升级**：蛇形逐行扫描恢复 2D 误差流——验收 = 1-bit 纯 ED ≥ PIL FS 25.82；
-2. **多档接线**：档位 [0,⅓,⅔,1] 名义值先行，实测线性度（标定 ③）后替换；
+1. **档位标定（当前最高优先）**：`--drops N` 的名义档 [0,1/N..1]×顶滴体积要先过
+   实测——③ 顶档/分级波形落墨线性度（平铺块打→测厚），实测值直接传 `ed_fs` 的
+   lv 表（printer 吃 lv 加权和，天然支持非线性档）。N≥4 后加档饱和（#26/#55），
+   实用点 N=4。
+2. **蛇形 2D 核升级（收益待重新定价）**：1-bit 的 −1.18dB 大头已被证明是量化
+   步长（#55），此项要在 N=4 基线上先测残余缺口再决定投入。
 3. **工艺约束**（最大连续膜厚/台阶覆盖/孤立点）：离线优化 DBS/CVO 直接优化位图，
-   目标函数用 `printer.py` 物理口径，**不训练网络**；
-4. **验收 = 物理尺度均匀性**（100µm 膜厚 RMS + 档位混合统计），不用视觉 ΔE
-   ——膜层被工艺平均（#44 口径教训反向适用）；单档量化误差是物理下限，
-   靠邻域混合摊平（#26）。
+   目标函数用 `printer.py` 物理口径 + `thickness_rms_um`，**不训练网络**。
+4. **验收 = 物理尺度均匀性**：`batch/wedge` 已输出 100µm 膜厚 RMS（µm，#55），
+   不用视觉 ΔE（#44 反向适用）；注意 inkcov 对档位灰度图饱和（#48/#55），
+   多档覆盖率以张量自检为准。

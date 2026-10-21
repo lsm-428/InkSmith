@@ -112,27 +112,55 @@ def gs_inkcov(bitmap_path):
 
 # ---------------------------------------------------------------- 主引擎：ED-FS
 
-def ed_halftone(target_cov, device, bias_gain=4.0):
+def ed_halftone(target_cov, device, bias_gain=4.0, drops=1):
     """ED-FS 逐列串行误差扩散（本项目主引擎，根目录 `ed_fs.py`）。
 
-    1-bit 无「档位」维：logits 恒零（无先验——原模型先验贡献实测 +0.02dB≈0，
-    #45；NN 已于 #52 整体移除），决策完全由 buf 偏置引导：buf>0.5 落墨、
-    否则不落，量化误差按 FS 权重扩散给后续列（权重和严格为 1，#42）。
-    dithering 是机制的必然结果，不靠损失鼓励（#29/#32 同一结论）。
+    `target_cov` 是**相对膜厚 ∈ [0,1]**（film 下 = 灰度；paper 下 = 1-灰度）。
 
-    target_cov 是**目标墨覆盖率**，不是图像灰度：film 下灰度=膜厚=覆盖率；
-    paper 下灰度=打印后亮度（1=白纸）故覆盖率=1-灰度。
+    `drops`=N（N=1 即现役 1-bit）= **多档液滴 film**：档位表 lv=[0,1/N,..,1]，
+    物理模型 = 压电喷头**波形分级变体积墨滴**（如 ⅓/⅔/全量滴）——one-pass 下
+    同一像素只喷一次，"多液滴"只能以档位实现（多滴叠打=多 pass，已排除）。
+    步进体积 = drop_pl/N ⇒ **绝对膜厚颗粒度随 N 变细**（这与 dpi 相反：dpi 管
+    量程、档位管颗粒，PITFALLS #52）。若实测顶档是叠滴 regime，把 --drop-pl
+    调大即可，ED 侧档位表通用（真机非线性档位直接传实测 lv 表——printer 的
+    `ink` 就是 lv 加权和）。
+    返回相对膜厚图 ∈ [0,1]（可直接喂 printer）。
+
+    logits 恒零（无先验——模型先验实测为负资产，#45/#52），决策完全由 buf
+    偏置引导；量化误差按 FS 权重扩散给后续列，权重和严格为 1（#42）。
     """
     from ed_fs import ed_fs
-    lv = torch.tensor([0.0, 1.0], device=device)
-    z = torch.zeros(*target_cov.shape, 2, device=device)
-    return ed_fs(z, target_cov, lv, bias_gain=bias_gain)[..., 1]
+    lv = torch.arange(0, drops + 1, dtype=torch.float32, device=device) / drops
+    z = torch.zeros(*target_cov.shape, drops + 1, device=device)
+    out = ed_fs(z, target_cov, lv, bias_gain=bias_gain)
+    return (out * lv.view(1, 1, 1, -1)).sum(-1)     # one-hot -> 相对膜厚图
+    # drops=1 时 lv=[0,1]，与旧实现 out[...,1] 逐位等价（回归安全）
+
+
+def tmax_um(dpi, drop_pl=6.0):
+    """顶档满覆盖膜厚：T = V_top/p²，V_top=drop_pl×1e3 µm³，p=25400/dpi µm。
+    与档位数无关——顶档体积定标在 drop_pl 上（6pL 全量滴）。"""
+    return drop_pl * 1e3 * (dpi / 25400.0) ** 2
+
+
+def thickness_rms_um(printed01, target01, dpi, tmax, win_um=100.0):
+    """物理尺度均匀性（多档 film 的验收指标，AGENTS 路线图）：
+    win_um 滑窗均值偏差 RMS，单位 µm。场为相对膜厚 [0,1]，×tmax 换算绝对厚度。"""
+    w = max(2, round(win_um * dpi / 25400.0))
+    a, b = w // 2, w - 1 - w // 2          # pad 后池化尺寸与原图一致
+    ma = F.avg_pool2d(F.pad(printed01, (a, b, a, b), mode="reflect"), w)
+    mt = F.avg_pool2d(F.pad(target01, (a, b, a, b), mode="reflect"), w)
+    return math.sqrt(F.mse_loss(ma, mt).item()) * tmax
 
 
 # ---------------------------------------------------------------- 共用
 
 def triplet(img, args, device):
-    """同一张图跑 ED/FS/GS 三条路线，返回 (inks, prints, target)。"""
+    """同一张图跑 ED/FS/GS 三条路线，返回 (inks, prints, target)。
+
+    drops>1 时只有 ED 路线吃多档（FS/GS 是 1-bit 工业基线，保持单档口径
+    ——这正是"多档 film 相对 1-bit 的增量"要在同一 PSNR/RMS 尺上显出来的原因）。
+    """
     film = args.printer == "film"
     target, base_img = film_target_and_base(img, film, device)
     size = (target.shape[3], target.shape[2])
@@ -140,7 +168,7 @@ def triplet(img, args, device):
     GS_WORKDIR.mkdir(parents=True, exist_ok=True)
     cov_tg = target if film else 1.0 - target
     with torch.no_grad():
-        inks = {"ed": ed_halftone(cov_tg, device, args.bias_gain),
+        inks = {"ed": ed_halftone(cov_tg, device, args.bias_gain, args.drops),
                 "fs": floyd_steinberg(base_img, size).to(device),
                 "gs": gs_halftone(base_img, size, GS_WORKDIR).to(device)}
         prints = {k: printer(v) for k, v in inks.items()}
@@ -169,8 +197,14 @@ def print_texture(tag, t):
 
 # ---------------------------------------------------------------- infer
 
+def ink_bitmap(ink_rel):
+    """相对膜厚图（档位图 ∈[0,1]）-> 打印位图，口径**墨=黑/0**：
+    像素 = 255×(1−档值)。drops=1 退化为旧式 (1-ink)*255，逐位一致。"""
+    return np.uint8(np.clip((1 - ink_rel[0, 0].cpu().numpy()) * 255, 0, 255))
+
+
 def cmd_infer(args):
-    """单图推理：ED-FS 出打印位图 + 模拟预览。"""
+    """单图推理：ED-FS 出打印位图 + 模拟预览。drops>1 时位图是体积档位图。"""
     device = "cuda" if torch.cuda.is_available() else "cpu"
     printer = build_sim(args)
     img = Image.open(args.input).convert("L")
@@ -179,15 +213,15 @@ def cmd_infer(args):
     target, _ = film_target_and_base(img, film, device)
     cov_tg = target if film else 1.0 - target
     with torch.no_grad():
-        ink = ed_halftone(cov_tg, device, args.bias_gain)[..., :h, :w]  # 裁回原尺寸
+        ink = ed_halftone(cov_tg, device, args.bias_gain, args.drops)[..., :h, :w]
         printed = printer(ink)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     # 墨=黑（0=墨）：与 cmd_one/webapp 落盘口径一致，可直接喂 RIP/inkcov（#52）
-    bitmap = ((1 - ink[0, 0].cpu().numpy()) * 255).astype(np.uint8)
+    bitmap = ink_bitmap(ink)
     preview = (printed[0, 0].cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
     Image.fromarray(bitmap, mode="L").save(f"{args.out}_bitmap.png")
     Image.fromarray(preview, mode="L").save(f"{args.out}_preview.png")
-    print(f"二值位图: {args.out}_bitmap.png（墨=黑/0，直接可打）")
+    print(f"打印位图: {args.out}_bitmap.png（墨=黑/0，{args.drops+1} 档体积级，直接可打）")
     print(f"模拟打印: {args.out}_preview.png（经铺展模拟的膜厚效果）")
 
 
@@ -198,7 +232,8 @@ def cmd_one(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     inks, prints, target = triplet(Image.open(args.input).convert("L"), args, device)
     if args.printer == "film":
-        print("[film] 膜基模式：模拟输出=相对膜厚，基线用反相图加网")
+        print(f"[film] 膜基模式：模拟输出=相对膜厚，基线用反相图加网"
+              f"（ED={args.drops+1} 档体积级，FS/GS 保持 1-bit 口径）")
     outdir = Path(args.out).parent
     outdir.mkdir(parents=True, exist_ok=True)
     p = {k: psnr(v, target) for k, v in prints.items()}
@@ -207,9 +242,10 @@ def cmd_one(args):
           f"ED vs GS {p['ed']-p['gs']:+.2f}")
 
     # 落盘位图（墨=黑）并用 ghostscript inkcov 独立审计墨覆盖率
+    # inkcov 读 L 灰度 PDF 报告的是平均色覆盖率 = 相对膜厚（多滴档位图同样可比）
     for name, ink in inks.items():
         path = f"{args.out}_{name}_bitmap.png"
-        pil = Image.fromarray(((1 - ink[0, 0].cpu().numpy()) * 255).astype(np.uint8),
+        pil = Image.fromarray(ink_bitmap(ink),
                               mode="L")
         pil.save(path)
         pil.save(f"{args.out}_{name}_bitmap.pdf", "PDF")  # gs 不认 PNG 输入
@@ -236,19 +272,24 @@ def cmd_batch(args):
     files = sorted(folder.glob("*.png")) + sorted(folder.glob("*.jpg"))
     if not files:
         raise SystemExit(f"{folder} 里没有图片")
-    print(f"{'照片':>12} {'ED-FS':>7} {'FS':>7} {'GS':>7} {'vs FS':>7} {'vs GS':>7}")
-    rows = []
+    tmax = tmax_um(args.dpi, args.drop_pl) if args.printer == "film" else 0.0
+    print(f"{'照片':>12} {'ED-FS':>7} {'FS':>7} {'GS':>7} {'vs FS':>7} {'vs GS':>7} "
+          f"{'ED@100µm RMS':>12}")
+    rows, rmss = [], []
     for f in files:
-        _, prints, target = triplet(Image.open(f).convert("L"), args, device)
+        inks, prints, target = triplet(Image.open(f).convert("L"), args, device)
         if args.printer == "film" and rows == []:
-            print("[film] 膜基模式：模拟输出=相对膜厚，基线用反相图加网")
+            print(f"[film] 膜基模式：模拟输出=相对膜厚，基线用反相图加网"
+                  f"（ED={args.drops+1} 档，T_max={tmax:.1f}µm；FS/GS 1-bit 口径）")
         r = [psnr(prints[m], target) for m in ("ed", "fs", "gs")]
-        rows.append(r)
+        rms = (thickness_rms_um(prints["ed"], target, args.dpi, tmax)
+               if args.printer == "film" else float("nan"))
+        rows.append(r); rmss.append(rms)
         print(f"{f.stem[:12]:>12} {r[0]:7.2f} {r[1]:7.2f} {r[2]:7.2f} "
-              f"{r[0]-r[1]:+7.2f} {r[0]-r[2]:+7.2f}")
+              f"{r[0]-r[1]:+7.2f} {r[0]-r[2]:+7.2f} {rms:9.2f}µm")
     m = np.array(rows).mean(axis=0)
     print(f"{'均值':>12} {m[0]:7.2f} {m[1]:7.2f} {m[2]:7.2f} "
-          f"{m[0]-m[1]:+7.2f} {m[0]-m[2]:+7.2f}")
+          f"{m[0]-m[1]:+7.2f} {m[0]-m[2]:+7.2f} {np.mean(rmss):9.2f}µm")
 
 
 # ---------------------------------------------------------------- wedge
@@ -263,11 +304,18 @@ def cmd_wedge(args):
         Image.fromarray((arr * 255).astype("uint8"), "L"), args, device)
     sigma_px = args.sigma_um * args.dpi / 25400.0 if args.printer == "film" \
         else args.sigma
+    tmax = tmax_um(args.dpi, args.drop_pl) if args.printer == "film" else 0.0
     print(f"灰度尺 {args.levels} 阶 @ {args.dpi} dpi（{args.printer} "
-          f"σ={sigma_px:.2f}px）")
+          f"σ={sigma_px:.2f}px，ED={args.drops+1} 档体积级，"
+          f"T_max={tmax:.1f}µm）")
+    rms = {m: (thickness_rms_um(prints[m], target, args.dpi, tmax)
+               if args.printer == "film" else float("nan"))
+           for m in ("ed", "fs", "gs")}
     print(f"\n全图 PSNR: ED-FS {psnr(prints['ed'], target):.2f} | "
           f"FS {psnr(prints['fs'], target):.2f} | "
-          f"GS {psnr(prints['gs'], target):.2f} dB")
+          f"GS {psnr(prints['gs'], target):.2f} dB | "
+          f"100µm 膜厚RMS: ED {rms['ed']:.2f} | FS {rms['fs']:.2f} | "
+          f"GS {rms['gs']:.2f} µm")
     print("\n分段覆盖偏差（实际覆盖率 - 目标覆盖率，|x|>0.02 才有意义）")
     print(f"{'灰阶':>6} {'目标':>6} | {'ED':>6} {'偏差':>7} | {'FS':>6} {'偏差':>7} "
           f"| {'GS':>6} {'偏差':>7}")
@@ -312,8 +360,15 @@ def main():
     phys.add_argument("--printer", choices=["paper", "film"], default="film",
                       help="paper=吸收基材(exp饱和)；film=非吸收膜基(线性体积)，主线")
     phys.add_argument("--sigma-um", type=float, default=25.0,
-                      help="film：铺展高斯 σ（µm）；25=1.42px@1440dpi（#11 结晶下限）")
+                      help="film：铺展高斯 σ（µm）；25=1.42px@1440dpi（#11 铺展下限）")
     phys.add_argument("--dpi", type=int, default=1440, help="film：打印分辨率")
+    phys.add_argument("--drops", type=int, default=1,
+                      help="ED 引擎体积档位数 N（档位表 [0,1/N..1]×顶档体积）；"
+                           "N=1 现役 1-bit，N>1 多档 film（细颗粒度，#52）。"
+                           "FS/GS 基线恒 1-bit 口径")
+    phys.add_argument("--drop-pl", type=float, default=6.0,
+                      help="顶档单滴体积 pL（µm³=pL×1000），T_max 换算用；"
+                           "KM1024iSHE 全量滴=6；多档波形分级顶档实测值替换")
     phys.add_argument("--sigma", type=float, default=1.0,
                       help="paper：墨滴扩散 σ（像素）")
     phys.add_argument("--gain", type=float, default=1.5,

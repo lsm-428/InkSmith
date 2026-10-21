@@ -62,10 +62,12 @@ def fit(img, max_side=MAX_SIDE):
 
 # ---------------------------------------------------------------- 三路线核心
 
-def _routes(img, dpi):
+def _routes(img, dpi=None, drops=1):
+    dpi = dpi or DEFAULT_DPI
     """与 eval.triplet 同口径：ED-FS（主引擎）/ PIL FS / GS 筛网。
 
     film 语义：灰度=相对膜厚=目标覆盖率，FS/GS 吃反相图（#43 几何对齐）。
+    drops>1 = 多档 film（ED 路线吃 N+1 档体积级，FS/GS 恒 1-bit 口径）。
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     printer = FilmSimulator(sigma_um=SIGMA_UM, dpi=dpi).to(device)
@@ -73,23 +75,23 @@ def _routes(img, dpi):
     size = (target.shape[3], target.shape[2])
     GS_WORKDIR.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
-        inks = {"ed": ed_halftone(target, device),
+        inks = {"ed": ed_halftone(target, device, drops=drops),
                 "fs": floyd_steinberg(base_img, size).to(device),
                 "gs": gs_halftone(base_img, size, GS_WORKDIR).to(device)}
         prints = {k: printer(v) for k, v in inks.items()}
     return inks, prints, target
 
 
-def process_one(name, dataurl, dpi=DEFAULT_DPI):
+def process_one(name, dataurl, dpi=DEFAULT_DPI, drops=1):
     """1-bit 三路线对照。位图落盘口径：墨=黑/0（与 eval infer/one 一致，#52）。"""
     t0 = time.time()
     img, scaled = fit(decode(dataurl).convert("L"))
-    inks, prints, target = _routes(img, dpi)
+    inks, prints, target = _routes(img, dpi, drops)
     ink2img = lambda ink: np.uint8((1 - ink[0, 0].cpu().numpy()) * 255)
     clip = lambda x: x[0, 0].cpu().numpy().clip(0, 1)
     return {
         "name": name, "size": [img.width, img.height], "scaled": scaled,
-        "dpi": dpi,
+        "dpi": dpi, "drops": drops,
         "ms": round((time.time() - t0) * 1000),
         "printer": "film",
         "ink": {"ed": round(inks["ed"].mean().item(), 4),
@@ -115,7 +117,7 @@ def process_one(name, dataurl, dpi=DEFAULT_DPI):
     }
 
 
-def wedge(n_levels=16, dpi=DEFAULT_DPI):
+def wedge(n_levels=16, dpi=DEFAULT_DPI, drops=1):
     """灰度尺诊断：分段覆盖率偏差（引擎最敏感的体检项）。"""
     t0 = time.time()
     n_levels = max(2, min(32, n_levels))
@@ -124,7 +126,7 @@ def wedge(n_levels=16, dpi=DEFAULT_DPI):
     arr = np.concatenate([np.full((seg, seg), l, np.float32) for l in levels],
                          axis=1)
     img = Image.fromarray((arr * 255).astype("uint8"), "L")
-    inks, prints, target = _routes(img, dpi)
+    inks, prints, target = _routes(img, dpi, drops)
     dev = lambda t, k: t[0, 0, :, k * seg:(k + 1) * seg].mean().item()
     rows = [{"level": round(float(l), 3),
              "ed": round(dev(prints["ed"], k), 3),
@@ -136,7 +138,7 @@ def wedge(n_levels=16, dpi=DEFAULT_DPI):
             r[f"d_{m}"] = round(r[m] - r["level"], 3)
     g = lambda x: np.uint8((1 - x[0, 0].cpu().numpy()) * 255)
     return {
-        "rows": rows, "dpi": dpi,
+        "rows": rows, "dpi": dpi, "drops": drops,
         "ms": round((time.time() - t0) * 1000),
         "psnr": {"ed": round(psnr(prints["ed"], target), 2),
                  "fs": round(psnr(prints["fs"], target), 2),
@@ -209,13 +211,16 @@ GRAY_HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>膜层半色调 · 1-bit ED-FS 对照</title><style>__CSS__</style></head><body>
 <header><h1>膜层半色调 · 1-bit<span class="tag">ED-FS / FS / GS</span></h1>
-<div class="sub">ED-FS 主引擎 vs Floyd-Steinberg vs Ghostscript 筛网。film 模式下灰度=相对膜厚，基线自动反相对齐。物理：σ=25µm（1.42px@1440dpi）。</div></header>
+<div class="sub">ED-FS 主引擎 vs Floyd-Steinberg vs Ghostscript 筛网。film 模式灰度=相对膜厚，基线自动反相对齐。σ=25µm@1440dpi；档位数 N>1 = 多档 film（ED 吃 N+1 档体积级，FS/GS 恒 1-bit）。</div></header>
 <main>
 <div class="bar">
   <input id="f" type="file" accept="image/*" multiple>
   <label class="chk">打印 dpi <input id="dpi" type="number" placeholder="__DPI__"
     style="width:78px;padding:5px 7px;background:#12151c;border:1px solid var(--line);
     border-radius:6px;color:var(--txt)"></label>
+  <label class="chk">档位数 N <input id="drops" type="number" min="1" max="8" placeholder="1"
+    style="width:52px;padding:5px 7px;background:#12151c;border:1px solid var(--line);
+    border-radius:6px;color:var(--txt)" title="ED 路线体积档位数 N+1（1=现役 1-bit；4=实测追平 FS）；FS/GS 恒 1-bit"></label>
   <button onclick="go()">开始转换</button>
   <button class="ghost" onclick="toggleWedge()">灰度尺诊断</button>
   <span id="st"></span>
@@ -227,6 +232,7 @@ GRAY_HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 const $=id=>document.getElementById(id);
 let LAST=[];
 const dpiVal=()=>{const v=$('dpi').value.trim();return v?parseInt(v):null;};
+const dropsVal=()=>{const v=$('drops').value.trim();return v?parseInt(v):1;};
 async function post(url,body){
   const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)});
@@ -251,7 +257,7 @@ async function toggleWedge(){
   if(box.innerHTML){box.innerHTML='';return;}
   $('st').innerText='灰度尺诊断中...';
   try{
-    const w=await post('/api/wedge',{dpi:dpiVal()});
+    const w=await post('/api/wedge',{dpi:dpiVal(),drops:dropsVal()});
     const c=v=>Math.abs(v)<=0.02?'':(v>0?'good':'bad');
     const s=v=>(v>=0?'+':'')+v.toFixed(3);
     const rows=w.rows.map(r=>`<tr><td>${r.level.toFixed(3)}</td>
@@ -280,7 +286,7 @@ async function go(){
   }
   $('st').innerText='转换中...';
   let data;
-  try{data=await post('/api/convert',{names,images:imgs,dpi:dpiVal()});}
+  try{data=await post('/api/convert',{names,images:imgs,dpi:dpiVal(),drops:dropsVal()});}
   catch(e){$('st').innerText='失败: '+e.message;return;}
   LAST=data;
   const t=data.reduce((a,d)=>a+d.ms,0);
@@ -364,13 +370,14 @@ class Handler:
                     ln = int(self.headers["Content-Length"])
                     req = json.loads(self.rfile.read(ln))
                     dpi = int(req.get("dpi") or DEFAULT_DPI)
+                    drops = int(req.get("drops") or 1)
                     if self.path == "/api/wedge":
-                        self._json(200, wedge(int(req.get("levels", 16)), dpi))
+                        self._json(200, wedge(int(req.get("levels", 16)), dpi, drops))
                         return
                     names, imgs = req["names"], req["images"]
                     if len(names) != len(imgs) or len(imgs) > 20:
                         raise ValueError("一次最多 20 张，且 names/images 对齐")
-                    out = [process_one(n, u, dpi) for n, u in zip(names, imgs)]
+                    out = [process_one(n, u, dpi, drops) for n, u in zip(names, imgs)]
                     self._json(200, out)
                 except Exception as e:  # noqa: BLE001
                     self._json(400, e, "text/plain")
