@@ -56,15 +56,19 @@ def main():
     print()
     d = args.dpi or 720
     sigma_px = sigma_um * d / 25400.0
-    # 铁律2 / PITFALLS #11：σ<1.4px 退火全程躺平（结晶下限）。本脚本的用途是
-    # 「σ 出处可溯」，若给出低于下限的配方必须显式警告，不能让人照着打印的命令跑。
+    # 原训练结晶下限（铁律2 / PITFALLS #11/#52：σ<1.4px 退火躺平）；NN 移除后
+    # 该阈值改读为**评测/铺展语义**：σ[px]<1.4 时相邻落墨不再融合，one-pass
+    # 单遍膜呈麻点（微观锯齿）。本脚本的用途是「σ 出处可溯」，低于该值必须
+    # 显式警告，不能让人照着打印的命令跑。
     if sigma_px < 1.4:
-        print(f"⚠ σ = {sigma_px:.2f}px @ {d}dpi **低于结晶下限 1.4px**"
-              f"（PITFALLS #11：退火全程躺平）。提高 dpi 或降低 --spread-um"
-              f" 使其 ≥1.4px，例如 --dpi 1440 --spread-um 25（=1.42px）。")
-    print("训练命令（把 --dpi 换成实际打印分辨率）：")
-    print(f"  uv run python train.py --printer film --sigma-um {sigma_um:.2f} "
-          f"--dpi {d} --out runs/onebit")
+        print(f"⚠ σ = {sigma_px:.2f}px @ {d}dpi **低于铺展下限 1.4px**：墨滴"
+              f"不融合，one-pass 单遍膜会是麻点（原训练下限 #11 同源）。"
+              f"提高 dpi 或降低 --spread-um 使其 ≥1.4px，"
+              f"例如 --dpi 1440 --spread-um 25（=1.42px）。")
+    print("评测/推理命令（把 --dpi 换成实际打印分辨率，物理参数即 CLI 参数）：")
+    print(f"  uv run python eval.py batch --sigma-um {sigma_um:.2f} --dpi {d}")
+    print(f"  uv run python eval.py infer 图.jpg --sigma-um {sigma_um:.2f} "
+          f"--dpi {d} --out out/photo")
 
 
 if __name__ == "__main__":

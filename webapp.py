@@ -1,6 +1,8 @@
-"""网页版对照：上传图 -> 三条路线出位图 + 指标（1-bit film 主线）。
+"""网页版对照（无 NN 主线）：上传图 -> ED-FS/FS/GS 三路线位图 + 指标。
 
-用法：uv run python webapp.py [--port 8123] [--ckpt runs/onebit/best.pt]
+用法：uv run python webapp.py [--port 8123]
+物理参数固定为已验证配方（film σ=25µm@1440dpi，#11 结晶下限之上）；
+页面里可临时改 dpi（影响铺展模拟的 σ[px] 换算）。
 浏览器打开 http://localhost:8123
 标准库实现，无需新依赖。
 
@@ -14,16 +16,18 @@ import base64
 import io
 import json
 import time
-from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from PIL import Image
 
-from eval import load_model_and_printer, psnr, triplet
+from eval import GS_WORKDIR, ed_halftone, film_target_and_base, floyd_steinberg, \
+    gs_halftone, psnr
+from halftone.printer import FilmSimulator
 
 MAX_SIDE = 512          # 单图最长边，控制显存与传输体积
+SIGMA_UM = 25.0         # 已验证配方：1.42px@1440dpi（PITFALLS #11）
+DEFAULT_DPI = 1440
 
 
 # ---------------------------------------------------------------- 图像工具
@@ -56,43 +60,53 @@ def fit(img, max_side=MAX_SIDE):
     return img, False
 
 
-# ---------------------------------------------------------------- 1-bit 路线
+# ---------------------------------------------------------------- 三路线核心
 
-GRAY_MODE = True    # 启动时从 ckpt args 判定（见 main），避免每请求 torch.load
+def _routes(img, dpi):
+    """与 eval.triplet 同口径：ED-FS（主引擎）/ PIL FS / GS 筛网。
+
+    film 语义：灰度=相对膜厚=目标覆盖率，FS/GS 吃反相图（#43 几何对齐）。
+    """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    printer = FilmSimulator(sigma_um=SIGMA_UM, dpi=dpi).to(device)
+    target, base_img = film_target_and_base(img, True, device)
+    size = (target.shape[3], target.shape[2])
+    GS_WORKDIR.mkdir(parents=True, exist_ok=True)
+    with torch.no_grad():
+        inks = {"ed": ed_halftone(target, device),
+                "fs": floyd_steinberg(base_img, size).to(device),
+                "gs": gs_halftone(base_img, size, GS_WORKDIR).to(device)}
+        prints = {k: printer(v) for k, v in inks.items()}
+    return inks, prints, target
 
 
-def _triplet(img, dpi, ckpt, ed=False):
-    return triplet(img, ckpt, dpi, ed=ed)
-
-
-def process_one(name, dataurl, ckpt, dpi=None, ed=True):
-    """1-bit 灰度三路线对照。ed=True（默认）走 ED-FS 后处理——铁律3：
-    硬阈值逐像素决策在膜基下赢不了 FS，网页对照必须与 eval --ed 同口径。"""
+def process_one(name, dataurl, dpi=DEFAULT_DPI):
+    """1-bit 三路线对照。位图落盘口径：墨=黑/0（与 eval infer/one 一致，#52）。"""
     t0 = time.time()
     img, scaled = fit(decode(dataurl).convert("L"))
-    inks, prints, target, a = _triplet(img, dpi, ckpt, ed=ed)
+    inks, prints, target = _routes(img, dpi)
     ink2img = lambda ink: np.uint8((1 - ink[0, 0].cpu().numpy()) * 255)
     clip = lambda x: x[0, 0].cpu().numpy().clip(0, 1)
     return {
         "name": name, "size": [img.width, img.height], "scaled": scaled,
-        "dpi": dpi or a.get("dpi"),
+        "dpi": dpi,
         "ms": round((time.time() - t0) * 1000),
-        "printer": a.get("printer", "paper"),
-        "ink": {"nn": round(inks["nn"].mean().item(), 4),
+        "printer": "film",
+        "ink": {"ed": round(inks["ed"].mean().item(), 4),
                 "fs": round(inks["fs"].mean().item(), 4),
                 "gs": round(inks["gs"].mean().item(), 4),
                 "target": round(target.mean().item(), 4)},
-        "psnr": {"nn": round(psnr(prints["nn"], target), 2),
+        "psnr": {"ed": round(psnr(prints["ed"], target), 2),
                  "fs": round(psnr(prints["fs"], target), 2),
                  "gs": round(psnr(prints["gs"], target), 2),
-                 "vs_fs": round(psnr(prints["nn"], target)
+                 "vs_fs": round(psnr(prints["ed"], target)
                                 - psnr(prints["fs"], target), 2),
-                 "vs_gs": round(psnr(prints["nn"], target)
+                 "vs_gs": round(psnr(prints["ed"], target)
                                 - psnr(prints["gs"], target), 2)},
         "img": {
             "orig": png_dataurl(np.asarray(img, np.uint8)),
-            "nn_bitmap": png_dataurl(ink2img(inks["nn"])),
-            "nn_preview": png_dataurl(clip(prints["nn"])),
+            "ed_bitmap": png_dataurl(ink2img(inks["ed"])),
+            "ed_preview": png_dataurl(clip(prints["ed"])),
             "fs_bitmap": png_dataurl(ink2img(inks["fs"])),
             "fs_preview": png_dataurl(clip(prints["fs"])),
             "gs_bitmap": png_dataurl(ink2img(inks["gs"])),
@@ -101,8 +115,8 @@ def process_one(name, dataurl, ckpt, dpi=None, ed=True):
     }
 
 
-def wedge(n_levels=16, dpi=None, ckpt=None, ed=True):
-    """1-bit 灰度尺诊断：分段覆盖率偏差（模型最敏感的体检项）。"""
+def wedge(n_levels=16, dpi=DEFAULT_DPI):
+    """灰度尺诊断：分段覆盖率偏差（引擎最敏感的体检项）。"""
     t0 = time.time()
     n_levels = max(2, min(32, n_levels))
     seg = 96
@@ -110,25 +124,25 @@ def wedge(n_levels=16, dpi=None, ckpt=None, ed=True):
     arr = np.concatenate([np.full((seg, seg), l, np.float32) for l in levels],
                          axis=1)
     img = Image.fromarray((arr * 255).astype("uint8"), "L")
-    inks, prints, target, a = _triplet(img, dpi, ckpt, ed=ed)
+    inks, prints, target = _routes(img, dpi)
     dev = lambda t, k: t[0, 0, :, k * seg:(k + 1) * seg].mean().item()
     rows = [{"level": round(float(l), 3),
-             "nn": round(dev(prints["nn"], k), 3),
+             "ed": round(dev(prints["ed"], k), 3),
              "fs": round(dev(prints["fs"], k), 3),
              "gs": round(dev(prints["gs"], k), 3)}
             for k, l in enumerate(levels)]
     for r in rows:
-        for m in ("nn", "fs", "gs"):
+        for m in ("ed", "fs", "gs"):
             r[f"d_{m}"] = round(r[m] - r["level"], 3)
     g = lambda x: np.uint8((1 - x[0, 0].cpu().numpy()) * 255)
     return {
-        "rows": rows, "dpi": dpi or a.get("dpi"),
+        "rows": rows, "dpi": dpi,
         "ms": round((time.time() - t0) * 1000),
-        "psnr": {"nn": round(psnr(prints["nn"], target), 2),
+        "psnr": {"ed": round(psnr(prints["ed"], target), 2),
                  "fs": round(psnr(prints["fs"], target), 2),
                  "gs": round(psnr(prints["gs"], target), 2)},
         "img": {"orig": png_dataurl(np.asarray(img, np.uint8)),
-                "nn": png_dataurl(g(inks["nn"])),
+                "ed": png_dataurl(g(inks["ed"])),
                 "fs": png_dataurl(g(inks["fs"])),
                 "gs": png_dataurl(g(inks["gs"]))},
     }
@@ -136,9 +150,9 @@ def wedge(n_levels=16, dpi=None, ckpt=None, ed=True):
 
 # ---------------------------------------------------------------- 页面
 
-def page_html(ckpt):
+def page_html():
     """渲染整页（暗色，单文件无外部依赖）。"""
-    return GRAY_HTML.replace("__CKPT__", ckpt)
+    return GRAY_HTML.replace("__DPI__", str(DEFAULT_DPI))
 
 
 BASE_CSS = """
@@ -193,13 +207,13 @@ th{background:#1b1f28;color:var(--mut);font-weight:500}
 
 GRAY_HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>神经半色调 · 1-bit 对照</title><style>__CSS__</style></head><body>
-<header><h1>神经半色调 · 1-bit 灰度<span class="tag" id="ck">__CKPT__</span></h1>
-<div class="sub">模型位图 vs Floyd-Steinberg vs Ghostscript 筛网。film 模式下灰度=相对膜厚，基线自动反相对齐。</div></header>
+<title>膜层半色调 · 1-bit ED-FS 对照</title><style>__CSS__</style></head><body>
+<header><h1>膜层半色调 · 1-bit<span class="tag">ED-FS / FS / GS</span></h1>
+<div class="sub">ED-FS 主引擎 vs Floyd-Steinberg vs Ghostscript 筛网。film 模式下灰度=相对膜厚，基线自动反相对齐。物理：σ=25µm（1.42px@1440dpi）。</div></header>
 <main>
 <div class="bar">
   <input id="f" type="file" accept="image/*" multiple>
-  <label class="chk">评估 dpi <input id="dpi" type="number" placeholder="ckpt值"
+  <label class="chk">打印 dpi <input id="dpi" type="number" placeholder="__DPI__"
     style="width:78px;padding:5px 7px;background:#12151c;border:1px solid var(--line);
     border-radius:6px;color:var(--txt)"></label>
   <button onclick="go()">开始转换</button>
@@ -224,7 +238,7 @@ const dl=(url,n)=>{const a=document.createElement('a');a.href=url;a.download=n;
   document.body.appendChild(a);a.click();a.remove();};
 function dlAll(){
   LAST.forEach(x=>{const n=x.name.replace(/\\.[^.]+$/,'');
-    dl(x.img.nn_bitmap,n+'_nn_bitmap.png');dl(x.img.nn_preview,n+'_nn_preview.png');
+    dl(x.img.ed_bitmap,n+'_ed_bitmap.png');dl(x.img.ed_preview,n+'_ed_preview.png');
     dl(x.img.fs_bitmap,n+'_fs_bitmap.png');dl(x.img.fs_preview,n+'_fs_preview.png');
     dl(x.img.gs_bitmap,n+'_gs_bitmap.png');dl(x.img.gs_preview,n+'_gs_preview.png');});
 }
@@ -241,15 +255,15 @@ async function toggleWedge(){
     const c=v=>Math.abs(v)<=0.02?'':(v>0?'good':'bad');
     const s=v=>(v>=0?'+':'')+v.toFixed(3);
     const rows=w.rows.map(r=>`<tr><td>${r.level.toFixed(3)}</td>
-      <td>${r.nn.toFixed(3)}</td><td class="${c(r.d_nn)}">${s(r.d_nn)}</td>
+      <td>${r.ed.toFixed(3)}</td><td class="${c(r.d_ed)}">${s(r.d_ed)}</td>
       <td>${r.fs.toFixed(3)}</td><td class="${c(r.d_fs)}">${s(r.d_fs)}</td>
       <td>${r.gs.toFixed(3)}</td><td class="${c(r.d_gs)}">${s(r.d_gs)}</td></tr>`).join('');
-    const worst=w.rows.reduce((a,b)=>Math.abs(b.d_nn)>Math.abs(a.d_nn)?b:a);
-    box.innerHTML=`<div class="card"><h3>灰度尺诊断<span class="meta">${w.rows.length} 阶${w.dpi?' @'+w.dpi+'dpi':''} · ${w.ms} ms · PSNR 模型 ${w.psnr.nn} / FS ${w.psnr.fs} / GS ${w.psnr.gs} dB</span></h3>
-    <p class="note">偏差 = 实际覆盖率 − 目标覆盖率，|偏差|&gt;0.02 标色。模型最大偏差在 <b>${worst.level.toFixed(3)}</b> 灰阶（<span class="${worst.d_nn>0?'good':'bad'}">${s(worst.d_nn)}</span>）——判断灰阶映射是否畸变（S 形）最直接的指标。</p>
-    <table><tr><th>灰阶</th><th colspan=2>模型</th><th colspan=2>FS</th><th colspan=2>GS</th></tr>
+    const worst=w.rows.reduce((a,b)=>Math.abs(b.d_ed)>Math.abs(a.d_ed)?b:a);
+    box.innerHTML=`<div class="card"><h3>灰度尺诊断<span class="meta">${w.rows.length} 阶${w.dpi?' @'+w.dpi+'dpi':''} · ${w.ms} ms · PSNR ED-FS ${w.psnr.ed} / FS ${w.psnr.fs} / GS ${w.psnr.gs} dB</span></h3>
+    <p class="note">偏差 = 实际覆盖率 − 目标覆盖率，|偏差|&gt;0.02 标色。ED 最大偏差在 <b>${worst.level.toFixed(3)}</b> 灰阶（<span class="${worst.d_ed>0?'good':'bad'}">${s(worst.d_ed)}</span>）——判断灰阶映射是否畸变最直接的指标。</p>
+    <table><tr><th>灰阶</th><th colspan=2>ED-FS</th><th colspan=2>FS</th><th colspan=2>GS</th></tr>
     <tr><th></th><th>覆盖</th><th>偏差</th><th>覆盖</th><th>偏差</th><th>覆盖</th><th>偏差</th></tr>${rows}</table>
-    <div class="imgs">${[['原图',w.img.orig],['模型位图',w.img.nn],['FS位图',w.img.fs],['GS位图',w.img.gs]]
+    <div class="imgs">${[['原图',w.img.orig],['ED位图',w.img.ed],['FS位图',w.img.fs],['GS位图',w.img.gs]]
       .map(([a,b])=>fig(a,b)).join('')}</div></div>`;
     $('st').innerText='';
   }catch(e){$('st').innerText='失败: '+e.message;}
@@ -277,7 +291,7 @@ async function go(){
     const s=v=>(v>=0?'+':'')+v.toFixed(2);
     const c=v=>v>=0?'good':'bad';
     $('summary').innerHTML=`<div class="card"><h3>均值（${data.length} 张）</h3><div class="chips">
-      <span class="chip"><span class="k">模型</span><b>${m('nn').toFixed(2)}</b> dB</span>
+      <span class="chip"><span class="k">ED-FS</span><b>${m('ed').toFixed(2)}</b> dB</span>
       <span class="chip"><span class="k">FS</span><b>${m('fs').toFixed(2)}</b></span>
       <span class="chip"><span class="k">GS</span><b>${m('gs').toFixed(2)}</b></span>
       <span class="chip ${c(m('vs_fs'))}"><span class="k">vs FS</span><b>${s(m('vs_fs'))}</b></span>
@@ -291,17 +305,17 @@ function card(d){
   const n=d.name.replace(/\\.[^.]+$/,'');
   return `<div class="card"><h3>${d.name}<span class="meta">${d.size[0]}×${d.size[1]}${d.dpi?' @'+d.dpi+'dpi':''}${d.printer?' ['+d.printer+']':''}${d.scaled?' · 已缩放':''} · ${d.ms} ms</span></h3>
   <div class="chips">
-    <span class="chip"><span class="k">PSNR</span><b>${d.psnr.nn}</b></span>
+    <span class="chip"><span class="k">PSNR</span><b>${d.psnr.ed}</b></span>
     <span class="chip"><span class="k">FS</span><b>${d.psnr.fs}</b></span>
     <span class="chip"><span class="k">GS</span><b>${d.psnr.gs}</b></span>
     <span class="chip ${c(d.psnr.vs_fs)}"><span class="k">vs FS</span><b>${s(d.psnr.vs_fs)}</b></span>
     <span class="chip ${c(d.psnr.vs_gs)}"><span class="k">vs GS</span><b>${s(d.psnr.vs_gs)}</b></span>
-    <span class="chip"><span class="k">墨量 模型/FS/GS/目标</span><b>${d.ink.nn}</b> / ${d.ink.fs} / ${d.ink.gs} / ${d.ink.target}</span>
+    <span class="chip"><span class="k">墨量 ED/FS/GS/目标</span><b>${d.ink.ed}</b> / ${d.ink.fs} / ${d.ink.gs} / ${d.ink.target}</span>
   </div>
   <div class="imgs">
     ${fig('原图',d.img.orig)}
-    ${fig('模型位图',d.img.nn_bitmap,n+'_nn_bitmap.png')}
-    ${fig('模型模拟打印',d.img.nn_preview,n+'_nn_preview.png')}
+    ${fig('ED-FS 位图',d.img.ed_bitmap,n+'_ed_bitmap.png')}
+    ${fig('ED-FS 模拟打印',d.img.ed_preview,n+'_ed_preview.png')}
     ${fig('FS 位图',d.img.fs_bitmap,n+'_fs_bitmap.png')}
     ${fig('FS 模拟打印',d.img.fs_preview,n+'_fs_preview.png')}
     ${fig('GS 位图',d.img.gs_bitmap,n+'_gs_bitmap.png')}
@@ -312,19 +326,15 @@ function card(d){
 
 # ---------------------------------------------------------------- HTTP
 
-CKPT = None
-
 
 class Handler:
     def __init__(self):
         from http.server import BaseHTTPRequestHandler
 
-        outer = self
-
         class H(BaseHTTPRequestHandler):
             def do_GET(self):
                 if self.path in ("/", "/index.html"):
-                    body = page_html(CKPT).encode("utf-8")
+                    body = page_html().encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
@@ -353,21 +363,18 @@ class Handler:
                 try:
                     ln = int(self.headers["Content-Length"])
                     req = json.loads(self.rfile.read(ln))
-                    if not GRAY_MODE:
-                        raise ValueError(
-                            "CMYK 路线已于 2026-10-21 停止支持，请用 1-bit ckpt")
+                    dpi = int(req.get("dpi") or DEFAULT_DPI)
                     if self.path == "/api/wedge":
-                        self._json(200, wedge(int(req.get("levels", 16)),
-                                              req.get("dpi") or None, CKPT))
+                        self._json(200, wedge(int(req.get("levels", 16)), dpi))
                         return
                     names, imgs = req["names"], req["images"]
                     if len(names) != len(imgs) or len(imgs) > 20:
                         raise ValueError("一次最多 20 张，且 names/images 对齐")
-                    out = [process_one(n, u, CKPT, req.get("dpi") or None)
-                           for n, u in zip(names, imgs)]
+                    out = [process_one(n, u, dpi) for n, u in zip(names, imgs)]
                     self._json(200, out)
                 except Exception as e:  # noqa: BLE001
                     self._json(400, e, "text/plain")
+
             def log_message(self, *a):
                 pass
 
@@ -375,24 +382,14 @@ class Handler:
 
 
 def main():
-    global CKPT, GRAY_MODE
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=8123)
-    p.add_argument("--ckpt", default="runs/onebit/best.pt")
     args = p.parse_args()
-    CKPT = args.ckpt
-    model, _printer, a, _device = load_model_and_printer(CKPT)
-    # 历史 CMYK 权重的特征：out_ch=4 或 levels>1（1-bit 主线 ckpt 恒 out_ch=1、
-    # levels=1）。启动时判一次即可，旧版每个 POST 重新 torch.load 纯属浪费。
-    GRAY_MODE = a.get("out_ch", 1) == 1 and a.get("levels", 1) == 1
-    if not GRAY_MODE:
-        raise SystemExit("CMYK 路线已于 2026-10-21 停止支持，请用 1-bit ckpt"
-                         "（复现历史评测须 checkout 5714501）")
-    kind = f"1-bit（printer={a.get('printer', 'paper')}）"
     H = Handler().H
     from http.server import HTTPServer
     httpd = HTTPServer(("127.0.0.1", args.port), H)
-    print(f"网页已启动：http://localhost:{args.port}  (ckpt={args.ckpt} · {kind})")
+    print(f"网页已启动：http://localhost:{args.port}  "
+          f"(ED-FS/FS/GS 三路线 · film σ={SIGMA_UM}µm@{DEFAULT_DPI}dpi，页面可改 dpi)")
     httpd.serve_forever()
 
 

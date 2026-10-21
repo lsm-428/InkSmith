@@ -1,21 +1,24 @@
-"""评测与诊断入口：跑模型/基线，出 PSNR 对照与"哪里不对"的量化诊断。
+"""评测与推理入口（无 NN 主线，2026-10-21 起）：ED-FS / FS / GS 三路线对照 + 诊断。
 
-评测（产出结果）
-  uv run python eval.py infer <图>                        -> 打印位图 + 模拟预览
-  uv run python eval.py one   <图>  --ckpt <ckpt>         -> 单图三方对照 + inkcov 审计
-  uv run python eval.py batch [文件夹] --ckpt <ckpt>      -> 批量三方对照（默认 data/photos_val）
+推理（产出可打印位图）
+  uv run python eval.py infer <图>                -> ED-FS 位图 + 模拟预览
+  uv run python eval.py one   <图>                -> 单图三方对照 + inkcov 审计
+  uv run python eval.py batch [文件夹]            -> 批量三方对照（默认 data/photos_val）
 
-诊断（查问题，改配方前先跑）
-  uv run python eval.py wedge  --ckpt <ckpt>              -> 灰度尺分段偏差 + 条纹检测
-  uv run python eval.py data                             -> 训练集平坦区/灰阶分布
-  uv run python eval.py norm                             -> 网络能否区分绝对灰阶
-  uv run python eval.py compare --a A.pt --b B.pt         -> 两个 ckpt 逐一对比
+诊断（改引擎/配方前必跑）
+  uv run python eval.py wedge                     -> 灰度尺分段偏差 + 条纹检测
 
-三条路线（模型 / FS / GS 筛网）共用同一套物理语义：film 模型下灰度=相对膜厚，
-FS/GS 按"越暗墨越多"加网，必须反相输入才能对齐（film_target_and_base 负责）。
+物理参数是 CLI 参数（原从 ckpt 重建，NN 移除后恒用下述默认——已验证配方）：
+  --printer film --sigma-um 25 --dpi 1440（σ=1.42px，#11 结晶下限之上）。
+
+三条路线共用同一套物理语义：film 模型下灰度=相对膜厚，FS/GS 按"越暗墨越多"
+加网，必须反相输入才能对齐（film_target_and_base 负责）。
+
+引擎现状（photos_val 12 张，同一几何口径）：ED-FS 24.67 | FS 25.82 | GS 24.67。
+ED-FS 仍差 FS 1.15——差距在机制（逐列并行把 2D 误差流压成 1D），不是缺网络
+（模型贡献实测 +0.02dB，PITFALLS #45/#52）；引擎升级（蛇形/2D 核）是下一步。
 """
 import argparse
-import glob
 import math
 import subprocess
 from pathlib import Path
@@ -26,7 +29,6 @@ import torch.nn.functional as F
 from PIL import Image
 from torchvision.utils import save_image
 
-from halftone.model import UNet
 from halftone.printer import build_printer
 
 GS_WORKDIR = Path("out/gs")
@@ -38,20 +40,10 @@ def psnr(a, b):
     return 10 * math.log10(1.0 / (F.mse_loss(a, b).item() + 1e-12))
 
 
-def load_model_and_printer(ckpt_path, dpi=None, device=None):
-    """从 ckpt 重建 UNet + printer；film 模式下可用 dpi 覆盖预览/评估分辨率。"""
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    a = ckpt["args"]
-    if dpi and a.get("printer") == "film":
-        a = {**a, "dpi": dpi}
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    model = UNet(base=a["base"], up=a.get("up", "nearest"),
-                 in_ch=a.get("in_ch", 1), out_ch=a.get("out_ch", 1),
-                 levels=a.get("levels", 1)).to(device)
-    model.load_state_dict(ckpt["model"])
-    model.eval()
-    printer = build_printer(a).to(device)
-    return model, printer, a, device
+def build_sim(args):
+    """CLI 物理参数 -> FilmSimulator/PrinterSimulator（复用 printer.build_printer）。"""
+    return build_printer(vars(args)).to(
+        "cuda" if torch.cuda.is_available() else "cpu")
 
 
 def film_target_and_base(img, film, device):
@@ -118,49 +110,41 @@ def gs_inkcov(bitmap_path):
     return [float("nan")] * 4
 
 
+# ---------------------------------------------------------------- 主引擎：ED-FS
+
+def ed_halftone(target_cov, device, bias_gain=4.0):
+    """ED-FS 逐列串行误差扩散（本项目主引擎，`halftone/ed_fs.py`）。
+
+    1-bit 无「档位」维：logits 恒零（无先验——原模型先验贡献实测 +0.02dB≈0，
+    #45；NN 已于 #52 整体移除），决策完全由 buf 偏置引导：buf>0.5 落墨、
+    否则不落，量化误差按 FS 权重扩散给后续列（权重和严格为 1，#42）。
+    dithering 是机制的必然结果，不靠损失鼓励（#29/#32 同一结论）。
+
+    target_cov 是**目标墨覆盖率**，不是图像灰度：film 下灰度=膜厚=覆盖率；
+    paper 下灰度=打印后亮度（1=白纸）故覆盖率=1-灰度。
+    """
+    from halftone.ed_fs import ed_fs
+    lv = torch.tensor([0.0, 1.0], device=device)
+    z = torch.zeros(*target_cov.shape, 2, device=device)
+    return ed_fs(z, target_cov, lv, bias_gain=bias_gain)[..., 1]
+
+
 # ---------------------------------------------------------------- 共用
 
-def onebit_ink(logits, target_cov, ed=False, bias_gain=4.0):
-    """1-bit 路线的位图决策：硬阈值，或 ED-FS 推理后处理。
-
-    `target_cov` 是**目标墨覆盖率**，不是图像灰度：film 下灰度=膜厚=覆盖率，
-    paper 下灰度=打印后亮度（1=白纸）故覆盖率=1-灰度。
-
-    1-bit 没有「档位」维，`ed_fs` 需要 L=2 的 logits（[不落墨, 落墨]）。
-    直接拿网络原始 logits 当先验即可：负值偏 0 档、正值偏 1 档，与
-    硬阈值 `logits>0` 的决策边界一致，只是把逐像素独立决策换成串行误差扩散。
-
-    PITFALLS #12/#13 的条纹退化解（行墨量 std 0.157）正是逐像素独立决策
-    的产物；ed_fs 把量化误差扩散给后续像素，邻域被迫选不同值 => dithering
-    是机制的必然结果，不靠损失鼓励（#29/#32 的同一结论）。
-    """
-    if not ed:
-        return (logits > 0).float()
-    from halftone.ed_fs import ed_fs
-    lv = torch.tensor([0.0, 1.0], device=logits.device)
-    z2 = torch.stack([torch.zeros_like(logits), logits], dim=-1)  # (B,1,H,W,2)
-    return ed_fs(z2, target_cov, lv, bias_gain=bias_gain)[..., 1]
-
-
-def triplet(img, ckpt, dpi=None, ed=False):
-    """同一张图跑 模型/FS/GS 三条路线，返回 (inks, prints, target, ckpt_args)。
-
-    ed=True 时模型的位图走 ED-FS 后处理（`onebit_ink`），基线不受影响。
-    """
-    model, printer, a, device = load_model_and_printer(ckpt, dpi=dpi)
-    film = a.get("printer", "paper") == "film"
+def triplet(img, args, device):
+    """同一张图跑 ED/FS/GS 三条路线，返回 (inks, prints, target)。"""
+    film = args.printer == "film"
     target, base_img = film_target_and_base(img, film, device)
     size = (target.shape[3], target.shape[2])
+    printer = build_sim(args)
     GS_WORKDIR.mkdir(parents=True, exist_ok=True)
+    cov_tg = target if film else 1.0 - target
     with torch.no_grad():
-        logits = model(target)
-        use_ed = ed and a.get("out_ch", 1) == 1
-        cov_tg = target if film else 1.0 - target
-        inks = {"nn": onebit_ink(logits, cov_tg, ed=use_ed),
+        inks = {"ed": ed_halftone(cov_tg, device, args.bias_gain),
                 "fs": floyd_steinberg(base_img, size).to(device),
                 "gs": gs_halftone(base_img, size, GS_WORKDIR).to(device)}
         prints = {k: printer(v) for k, v in inks.items()}
-    return inks, prints, target, a
+    return inks, prints, target
 
 
 def texture_stats(ink):
@@ -186,43 +170,41 @@ def print_texture(tag, t):
 # ---------------------------------------------------------------- infer
 
 def cmd_infer(args):
-    """单图推理：出打印位图 + 模拟预览。位图不跑基线，最快。"""
-    model, printer, a, device = load_model_and_printer(args.ckpt, dpi=args.dpi)
+    """单图推理：ED-FS 出打印位图 + 模拟预览。"""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    printer = build_sim(args)
     img = Image.open(args.input).convert("L")
     w, h = img.size
-    target, _ = film_target_and_base(img, False, device)  # 推理不需基线反相
+    film = args.printer == "film"
+    target, _ = film_target_and_base(img, film, device)
+    cov_tg = target if film else 1.0 - target
     with torch.no_grad():
-        logits = model(target)
-        use_ed = args.ed and a.get("out_ch", 1) == 1
-        cov_tg = target if a.get("printer") == "film" else 1.0 - target
-        ink = onebit_ink(logits, cov_tg, ed=use_ed)[..., :h, :w]   # 裁回原尺寸
+        ink = ed_halftone(cov_tg, device, args.bias_gain)[..., :h, :w]  # 裁回原尺寸
         printed = printer(ink)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-    # 墨=黑（0=墨）：与 cmd_one/webapp 落盘口径一致，可直接喂 RIP/inkcov。
-    # 此前存 ink*255（墨=白）却打印「1=墨」，是全库唯一极性相反的产物（#43
-    # 同族教训：口径不一致会白送/倒送结论）。
-    bitmap = ((1 - ink[0, 0].cpu().numpy()) * 255).astype(np.uint8)   # 0=墨
+    # 墨=黑（0=墨）：与 cmd_one/webapp 落盘口径一致，可直接喂 RIP/inkcov（#52）
+    bitmap = ((1 - ink[0, 0].cpu().numpy()) * 255).astype(np.uint8)
     preview = (printed[0, 0].cpu().numpy().clip(0, 1) * 255).astype(np.uint8)
     Image.fromarray(bitmap, mode="L").save(f"{args.out}_bitmap.png")
     Image.fromarray(preview, mode="L").save(f"{args.out}_preview.png")
     print(f"二值位图: {args.out}_bitmap.png（墨=黑/0，直接可打）")
-    print(f"模拟打印: {args.out}_preview.png（经扩散模型后的纸上效果）")
+    print(f"模拟打印: {args.out}_preview.png（经铺展模拟的膜厚效果）")
 
 
 # ---------------------------------------------------------------- one
 
 def cmd_one(args):
     """单图三方对照 + inkcov 审计 + 七行对比图。"""
-    inks, prints, target, a = triplet(Image.open(args.input).convert("L"),
-                                      args.ckpt, args.dpi, ed=args.ed)
-    if a.get("printer") == "film":
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    inks, prints, target = triplet(Image.open(args.input).convert("L"), args, device)
+    if args.printer == "film":
         print("[film] 膜基模式：模拟输出=相对膜厚，基线用反相图加网")
     outdir = Path(args.out).parent
     outdir.mkdir(parents=True, exist_ok=True)
     p = {k: psnr(v, target) for k, v in prints.items()}
-    print(f"模拟打印 PSNR：模型 {p['nn']:.2f} | FS {p['fs']:.2f} | "
-          f"GS筛网 {p['gs']:.2f} dB | 模型 vs FS {p['nn']-p['fs']:+.2f} | "
-          f"模型 vs GS {p['nn']-p['gs']:+.2f}")
+    print(f"模拟打印 PSNR：ED-FS {p['ed']:.2f} | FS {p['fs']:.2f} | "
+          f"GS筛网 {p['gs']:.2f} dB | ED vs FS {p['ed']-p['fs']:+.2f} | "
+          f"ED vs GS {p['ed']-p['gs']:+.2f}")
 
     # 落盘位图（墨=黑）并用 ghostscript inkcov 独立审计墨覆盖率
     for name, ink in inks.items():
@@ -239,28 +221,28 @@ def cmd_one(args):
         print(f"[inkcov] {name}: K 覆盖率 {covs[3]:.1%} "
               f"(张量自检 {ink.mean().item():.1%}){warn} -> {path}")
 
-    grid = torch.cat([target, inks["nn"], prints["nn"], inks["fs"], prints["fs"],
+    grid = torch.cat([target, inks["ed"], prints["ed"], inks["fs"], prints["fs"],
                       inks["gs"], prints["gs"]])
     save_image(grid, f"{args.out}.png", nrow=1)
-    print(f"对比图：{args.out}.png（原图|模型位图|模型打印|FS位图|FS打印|GS位图|GS打印）")
+    print(f"对比图：{args.out}.png（原图|ED位图|ED打印|FS位图|FS打印|GS位图|GS打印）")
 
 
 # ---------------------------------------------------------------- batch
 
 def cmd_batch(args):
     """真实照片文件夹批量三方对照，末尾给均值。"""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     folder = Path(args.folder)
     files = sorted(folder.glob("*.png")) + sorted(folder.glob("*.jpg"))
     if not files:
         raise SystemExit(f"{folder} 里没有图片")
-    print(f"{'照片':>12} {'模型':>7} {'FS':>7} {'GS':>7} {'vs FS':>7} {'vs GS':>7}")
+    print(f"{'照片':>12} {'ED-FS':>7} {'FS':>7} {'GS':>7} {'vs FS':>7} {'vs GS':>7}")
     rows = []
     for f in files:
-        _, prints, target, a = triplet(Image.open(f).convert("L"),
-                                       args.ckpt, args.dpi, ed=args.ed)
-        if rows == [] and a.get("printer") == "film":
+        _, prints, target = triplet(Image.open(f).convert("L"), args, device)
+        if args.printer == "film" and rows == []:
             print("[film] 膜基模式：模拟输出=相对膜厚，基线用反相图加网")
-        r = [psnr(prints[m], target) for m in ("nn", "fs", "gs")]
+        r = [psnr(prints[m], target) for m in ("ed", "fs", "gs")]
         rows.append(r)
         print(f"{f.stem[:12]:>12} {r[0]:7.2f} {r[1]:7.2f} {r[2]:7.2f} "
               f"{r[0]-r[1]:+7.2f} {r[0]-r[2]:+7.2f}")
@@ -273,33 +255,36 @@ def cmd_batch(args):
 
 def cmd_wedge(args):
     """灰度尺：分段覆盖偏差 + 位图纹理质量。查灰阶 S 形畸变与条纹退化解。"""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     lv = np.arange(args.levels) / (args.levels - 1)
     arr = np.concatenate([np.full((args.seg, args.seg), v, np.float32) for v in lv],
-                        axis=1)
-    inks, prints, target, a = triplet(Image.fromarray((arr * 255).astype("uint8"), "L"),
-                                      args.ckpt, args.dpi, ed=args.ed)
-    print(f"灰度尺 {args.levels} 阶 @ {args.dpi or a.get('dpi')} dpi "
-          f"(ckpt={args.ckpt}, {a.get('printer')})")
-    print(f"\n全图 PSNR: 模型 {psnr(prints['nn'], target):.2f} | "
+                         axis=1)
+    inks, prints, target = triplet(
+        Image.fromarray((arr * 255).astype("uint8"), "L"), args, device)
+    sigma_px = args.sigma_um * args.dpi / 25400.0 if args.printer == "film" \
+        else args.sigma
+    print(f"灰度尺 {args.levels} 阶 @ {args.dpi} dpi（{args.printer} "
+          f"σ={sigma_px:.2f}px）")
+    print(f"\n全图 PSNR: ED-FS {psnr(prints['ed'], target):.2f} | "
           f"FS {psnr(prints['fs'], target):.2f} | "
           f"GS {psnr(prints['gs'], target):.2f} dB")
     print("\n分段覆盖偏差（实际覆盖率 - 目标覆盖率，|x|>0.02 才有意义）")
-    print(f"{'灰阶':>6} {'目标':>6} | {'模型':>6} {'偏差':>7} | {'FS':>6} {'偏差':>7} "
+    print(f"{'灰阶':>6} {'目标':>6} | {'ED':>6} {'偏差':>7} | {'FS':>6} {'偏差':>7} "
           f"| {'GS':>6} {'偏差':>7}")
     worst = (0.0, 0.0)
     _rows = []
     for k, v in enumerate(lv):
         seg = lambda t: t[0, 0, :, k * args.seg:(k + 1) * args.seg].mean().item()
-        row = [seg(prints[m]) for m in ("nn", "fs", "gs")]
+        row = [seg(prints[m]) for m in ("ed", "fs", "gs")]
         _rows.append((v, row))
         d = [row[0] - v, row[1] - v, row[2] - v]
         if abs(d[0]) > abs(worst[1]):
             worst = (v, d[0])
         print(f"{v:6.3f} {v:6.3f} | {row[0]:6.3f} {d[0]:+7.3f} | {row[1]:6.3f} "
               f"{d[1]:+7.3f} | {row[2]:6.3f} {d[2]:+7.3f}")
-    print(f"\n模型最大偏差: 灰阶 {worst[0]:.3f} 处 {worst[1]:+.3f}")
+    print(f"\nED 最大偏差: 灰阶 {worst[0]:.3f} 处 {worst[1]:+.3f}")
     # 形态判定：纯阶跃（中间一两级突变、两侧各跑一边）与 S 形（两端外鼓）
-    # 是两种病，前者才是 #12 的硬阶跃根因（见 PITFALLS #13）。
+    # 是两种病，前者才是硬阈值断层（见 PITFALLS #12/#13）。
     lv_d = [row[0] - v for v, row in _rows]
     step = (max(lv_d) > 0.2 and min(lv_d) < -0.2
             and abs(worst[1] - max(lv_d)) < 1e-9
@@ -307,125 +292,12 @@ def cmd_wedge(args):
     print(f"形态: {'阶跃（中段突变、两侧各跑一边 => 硬阈值断层）' if step else 'S 形（两端外鼓/中间内塌或反之）' if worst[1] else '无明显畸变'}")
 
     print("\n位图纹理质量（像素级抖动应各项方差≈0）")
-    for m in ("nn", "fs", "gs"):
+    for m in ("ed", "fs", "gs"):
         print_texture(m, texture_stats(inks[m]))
-    t = texture_stats(inks["nn"])
+    t = texture_stats(inks["ed"])
     if t["row_std"] > 0.05:
-        print(f"  ⚠ 模型行墨量std {t['row_std']:.3f} 过高 => 用整行条纹表达灰阶，"
+        print(f"  ⚠ ED行墨量std {t['row_std']:.3f} 过高 => 用整行条纹表达灰阶，"
               f"这是覆盖率失真的主因（见 PITFALLS #12）")
-
-
-# ---------------------------------------------------------------- data
-
-def cmd_data(args):
-    """训练集平坦区占比与灰阶分布：查"数据够不够"。"""
-    from halftone.data import RgbCrops
-    paths = sorted(glob.glob(f"{args.dir}/*.png"))
-    if not paths:
-        raise SystemExit(f"{args.dir} 里没有图，先生成：uv run python gen_data.py --n 500")
-    print(f"训练集统计：{args.dir}，{len(paths)} 张，按 size={args.size} 采样 "
-          f"{args.n} 个裁块（模型实际看到的）")
-    ds = RgbCrops(args.dir, size=args.size, length=args.n)
-    k = torch.ones(1, 1, 3, 3) / 9.0
-    fracs, levels, hist = [], [], torch.zeros(10)
-    for i in range(len(ds)):
-        x = ds[i][None]
-        if x.shape[1] == 3:
-            x = x[:, :1]   # 灰度分布诊断只看亮度通道（RgbCrops 统一 3 通道）
-        var = F.conv2d(F.pad(x ** 2, (1, 1, 1, 1), mode="reflect"), k) - \
-              F.conv2d(F.pad(x, (1, 1, 1, 1), mode="reflect"), k) ** 2
-        flat = (var < args.flat_std ** 2).float()
-        fracs.append(flat.mean().item())
-        if flat.sum() > 200:
-            lv = ((x * flat).sum() / flat.sum()).item()
-            levels.append(lv)
-            hist[int(lv * 9 + 0.5)] += 1
-    print(f"\n平坦像素占比: 均值 {np.mean(fracs):.1%} 中位 {np.median(fracs):.1%} "
-          f"最小 {np.min(fracs):.1%}  (std<{args.flat_std} 视为平坦)")
-    print(f"平坦区样本 {len(levels)}/{len(ds)}，灰阶中位 {np.median(levels):.3f}")
-    print("\n平坦区灰阶分布（10 档）——分布太窄 = 模型没见过某些绝对灰阶")
-    for j in range(10):
-        n = hist[j].item()
-        print(f"  {j/9:.2f}  {n:5.0f}  {'#' * int(n / max(1, hist.max().item()) * 40)}")
-    print("\n判读：两端（<0.1 / >0.9）样本 <5% 就要怀疑暗/亮端覆盖不足。")
-
-
-# ---------------------------------------------------------------- norm
-
-def cmd_norm(args):
-    """架构探针：网络能否区分不同绝对灰阶（查信息有没有被归一化抹掉）。"""
-    from halftone.model import UNet
-    torch.manual_seed(0)
-    net = UNet(base=args.base).eval()
-    lv = [0.0, 0.133, 0.267, 0.5, 0.733, 0.867, 1.0]
-    print(f"架构探针：冻结随机 UNet(base={args.base}) 喂空间常数图")
-    print(f"{'灰阶':>6} {'logits均值':>12} {'logits标准差':>13}")
-    outs = []
-    for c in lv:
-        with torch.no_grad():
-            y = net(torch.full((1, 1, 128, 128), float(c)))
-        outs.append(y)
-        print(f"{c:6.3f} {y.mean().item():12.5f} {y.std().item():13.5f}")
-    pair = sorted((abs(lv[i] - lv[j]), (outs[i] - outs[j]).abs().mean().item())
-                  for i in range(len(lv)) for j in range(i + 1, len(lv)))
-    print("\n灰阶差 -> 输出差")
-    for i in range(0, len(pair), max(1, len(pair) // 8)):
-        print(f"  {pair[i][0]:.3f} -> {pair[i][1]:.6f}")
-
-    # 判读：单调性 + 符号 + 对比度，三项都要过。
-    # 旧的“最大灰阶差输出差 > 3x 最小灰阶差输出差”任何非线性网络都能过，
-    # 反而放过了常数输入下输出恒 0（GroupNorm 通道内 std=0 直接抹掉）
-    # 和倒 U 形（0.5 处输出最大）两类真异常。PITFALLS #12。
-    means = [y.mean().item() for y in outs]
-    d = [means[i + 1] - means[i] for i in range(len(means) - 1)]
-    monotone = all(x > 0 for x in d) or all(x < 0 for x in d)
-    signed = means[-1] - means[0] != 0.0
-    contrast = pair[-1][1] > 1e-3
-    checks = [("单调（输出差随灰阶单向变化）", monotone),
-              ("有符号（最亮与最暗输出不同）", signed),
-              ("有对比度（输出差 > 1e-3）", contrast)]
-    for name, ok in checks:
-        print(f"  [{'OK' if ok else 'FAIL'}] {name}")
-    ok = all(x for _, x in checks)
-    if ok:
-        verdict = "正常，灰阶信息保留"
-    elif not contrast:
-        verdict = "异常！不同灰阶输出几乎无差异，GroupNorm 抹掉了均值信息"
-    elif not signed:
-        verdict = "异常！输出无符号区分，网络对绝对灰阶不敏感"
-    else:
-        verdict = "异常！输出非单调，无法区分绝对灰阶大小"
-    print(f"\n判读: {verdict}")
-    print("注意：这是空间常数图探针，只查信息通道在不在；平坦区能否长出")
-    print("抖动纹理要看 wedge 的行墨量 std（PITFALLS #12 的判据）。")
-
-
-# ---------------------------------------------------------------- compare
-
-def cmd_compare(args):
-    """两个 ckpt 在同一批图上逐一对比：查新配方有没有变好。"""
-    imgs = sorted(glob.glob(f"{args.dir}/*.png"))[: args.limit]
-    if not imgs:
-        raise SystemExit(f"{args.dir} 里没有图片")
-    print(f"对比 {len(imgs)} 张图：{args.a}  vs  {args.b}\n")
-    print(f"{'图片':>16} | {'A模型':>7} {'A vs FS':>8} | {'B模型':>7} {'B vs FS':>8} "
-          f"| {'B-A':>7}")
-    tot = {"a": [], "b": []}
-    for p in imgs:
-        img = Image.open(p).convert("L")
-        # ed 必须透传（铁律3：推理口径 = ED-FS）。此前 --ed 被 ckpt_arg 注册
-        # 却从未传入，compare 静默比的是硬阈值口径，两 ckpt 结论建立在错机制上。
-        _, pa, ta, _ = triplet(img, args.a, args.dpi, ed=args.ed)
-        _, pb, tb, _ = triplet(img, args.b, args.dpi, ed=args.ed)
-        sa, sb = psnr(pa["nn"], ta), psnr(pb["nn"], tb)
-        fa, fb = psnr(pa["fs"], ta), psnr(pb["fs"], tb)
-        tot["a"].append(sa - fa)
-        tot["b"].append(sb - fb)
-        print(f"{Path(p).stem[:16]:>16} | {sa:7.2f} {sa-fa:+8.2f} | "
-              f"{sb:7.2f} {sb-fb:+8.2f} | {sb-sa:+7.2f}")
-    ma, mb = np.mean(tot["a"]), np.mean(tot["b"])
-    print(f"\n均值 vs FS:  A {ma:+.2f} dB   B {mb:+.2f} dB   "
-          f"B-A {mb-ma:+.2f} dB  {'← B 更好' if mb > ma else '← A 更好或持平'}")
 
 
 # ---------------------------------------------------------------- main
@@ -435,53 +307,41 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    def ckpt_arg(sp, default="runs/onebit/best.pt"):
-        sp.add_argument("--ckpt", default=default)
-        sp.add_argument("--dpi", type=int, default=None,
-                        help="film 模式：按此 dpi 评估（默认 ckpt 里的）")
-        sp.add_argument("--ed", action="store_true",
-                        help="推理走 ED-FS 误差扩散后处理：修 PITFALLS "
-                             "#12/#13 条纹退化解（实测 14.80->24.67dB，仍差 FS "
-                             "25.82 共 1.15，12/12 全输，见 #43/#45）")
-        return sp
+    # 物理参数（原随 ckpt 存权重里；NN 移除后为 CLI 参数，默认=已验证配方）
+    phys = argparse.ArgumentParser(add_help=False)
+    phys.add_argument("--printer", choices=["paper", "film"], default="film",
+                      help="paper=吸收基材(exp饱和)；film=非吸收膜基(线性体积)，主线")
+    phys.add_argument("--sigma-um", type=float, default=25.0,
+                      help="film：铺展高斯 σ（µm）；25=1.42px@1440dpi（#11 结晶下限）")
+    phys.add_argument("--dpi", type=int, default=1440, help="film：打印分辨率")
+    phys.add_argument("--sigma", type=float, default=1.0,
+                      help="paper：墨滴扩散 σ（像素）")
+    phys.add_argument("--gain", type=float, default=1.5,
+                      help="paper：网点扩大系数")
+    phys.add_argument("--bias-gain", type=float, default=4.0,
+                      help="ED 偏置增益（|buf-档位| 的权重，越大越贴覆盖率）")
 
-    i = ckpt_arg(sub.add_parser("infer", help="单图推理 -> 打印位图 + 预览"),
-                 "runs/onebit/last.pt")
+    i = sub.add_parser("infer", parents=[phys],
+                       help="单图推理 -> ED-FS 打印位图 + 预览")
     i.add_argument("input")
     i.add_argument("--out", default="out/photo")
     i.set_defaults(func=cmd_infer)
 
-    o = ckpt_arg(sub.add_parser("one", help="单图三方对照 + inkcov 审计"))
+    o = sub.add_parser("one", parents=[phys],
+                       help="单图三方对照 + inkcov 审计")
     o.add_argument("input")
     o.add_argument("--out", default="out/verify")
     o.set_defaults(func=cmd_one)
 
-    b = ckpt_arg(sub.add_parser("batch", help="批量三方对照"))
+    b = sub.add_parser("batch", parents=[phys], help="批量三方对照")
     b.add_argument("folder", nargs="?", default="data/photos_val")
     b.set_defaults(func=cmd_batch)
 
-    w = ckpt_arg(sub.add_parser("wedge", help="灰度尺分段偏差 + 条纹检测"))
+    w = sub.add_parser("wedge", parents=[phys],
+                       help="灰度尺分段偏差 + 条纹检测")
     w.add_argument("--levels", type=int, default=16)
     w.add_argument("--seg", type=int, default=128, help="每阶块边长")
     w.set_defaults(func=cmd_wedge)
-
-    d = sub.add_parser("data", help="训练集平坦区与灰阶分布")
-    d.add_argument("--dir", default="data/images_gray")
-    d.add_argument("--size", type=int, default=256)
-    d.add_argument("--n", type=int, default=256)
-    d.add_argument("--flat-std", type=float, default=0.02)
-    d.set_defaults(func=cmd_data)
-
-    m = sub.add_parser("norm", help="网络能否区分绝对灰阶")
-    m.add_argument("--base", type=int, default=32)
-    m.set_defaults(func=cmd_norm)
-
-    c = ckpt_arg(sub.add_parser("compare", help="两个 ckpt 逐一对比"))
-    c.add_argument("--a", required=True)
-    c.add_argument("--b", required=True)
-    c.add_argument("--dir", default="data/photos_val")
-    c.add_argument("--limit", type=int, default=12)
-    c.set_defaults(func=cmd_compare)
 
     args = p.parse_args()
     args.func(args)

@@ -1,14 +1,13 @@
 [project]
-name = "neural-halftone"
+name = "inksmith"
 version = "0.1.0"
-description = "神经半色调：NN 直接输出喷墨可打印的二值点阵图"
+description = "墨匠 InkSmith：膜层半色调——ED-FS 误差扩散引擎输出 one-pass 可打印位图（无 NN，PITFALLS #52）"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "torch==2.7.1",
     "torchvision==0.22.1",
     "numpy>=2.3.0",
     "pillow>=11.0.0",
-    "tqdm>=4.67.0",
 ]
 
 [[tool.uv.index]]
