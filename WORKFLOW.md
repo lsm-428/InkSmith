@@ -22,14 +22,14 @@ uv sync        # 按 pyproject.toml 装 torch 2.7.1+cu118
 
 | 来源 | 命令 | 说明 |
 |---|---|---|
-| 脚本合成 | `uv run python gen_data.py --n 500` | 6 类频率成分：渐变/斑块/分形噪声/几何/条纹/混合 |
-| 真实厚度图 | 手动拷贝进 `data/images/` | 目标图案越接近实际打印越好 |
+| 脚本合成 | `uv run python gen_data.py --n 500` | 6 类频率成分：渐变/斑块/分形噪声/几何/条纹/混合（默认输出 `data/images_gray/`） |
+| 真实厚度图 | 手动拷贝进 `data/images_gray/` | 目标图案越接近实际打印越好 |
 
 - 数据量建议 500~2000；重新生成会覆盖同名文件（种子固定可复现）。
 - 验证集 `data/val/`：种子 123 固定 30 张，**勿混入训练集**；
   丢失重建 `uv run python gen_data.py --n 30 --seed 123 --out data/val`。
-- `data/images_ai`（SD 彩色图）与 `gen_ai.py` 是 CMYK 路线遗留，已停用；
-  `gen_ai.py` 保留在仓库但主线不再依赖。
+- `data/images_ai`（SD 彩色图）与 `data/images`（脚本彩色图）已随 CMYK 路线
+  **删除**；`gen_ai.py` 保留在仓库备用（主线不再依赖，膜层是灰度厚度图）。
 
 ## 阶段 2：训练
 
@@ -48,10 +48,11 @@ uv sync        # 按 pyproject.toml 装 torch 2.7.1+cu118
 每轮结束在验证集测硬阈值 psnr/孤立点率/明暗偏差。
 产物：`best.pt`、`train.log`（逐 epoch）、`pipeline_log.jsonl`（逐轮，中途被杀不丢）。
 
-手动/微调单段（`--rounds 1`，一般不用）：
+手动/微调单段（`--rounds 1`，一般不用；**默认从 `<--out>/last.pt` 续训**，
+从零须显式 `--no-resume`，#51）：
 
 ```bash
-uv run python train.py --rounds 1 --data data/images --epochs 20 --length 2000
+uv run python train.py --rounds 1 --data data/images_gray --epochs 20 --length 2000
 # 冒烟（~10 秒）：uv run python train.py --smoke
 ```
 
@@ -83,7 +84,8 @@ uv run python eval.py infer 照片.jpg --ckpt runs/onebit/best.pt --ed --out out
 ```
 
 产出两个文件：
-- `*_bitmap.png` — 0/1 二值图，**这就是发给打印机的位图**（film 语义：1=落墨=增厚）；
+- `*_bitmap.png` — 0/1 二值图，**这就是发给打印机的位图**（**墨=黑/0**，与
+  `one`/`webapp` 落盘及 inkcov 审计口径一致）；
 - `*_preview.png` — 经扩散模型模拟的膜厚效果，用于打印前自检。
 
 ⚠ 不带 `--ed` 的硬阈值输出是逐像素独立决策，膜基下 14.80dB 远逊 FS 25.82，
@@ -133,7 +135,8 @@ uv run python eval.py infer 照片.jpg --ckpt runs/onebit/best.pt --ed --out out
 ```
 train.py             训练入口（默认自动编排；--rounds 1 为单段）
 eval.py              评测+诊断：infer / one / batch / wedge / data / norm / compare
-webapp.py            网页版对照（1-bit 三路线）
+                     （compare 也吃 --ed，#51 起真正透传；改配方前对比两 ckpt 必加）
+webapp.py            网页版对照（1-bit 三路线；默认 ED 口径，#51 起与 eval --ed 一致）
 gen_data.py          合成灰度数据
 calc_sigma.py        喷头参数 + 实测铺展 -> σ 计算器
 halftone/model.py    U-Net + STE 二值化 + 多档 levels 参数（2-bit film 复用）
@@ -141,7 +144,7 @@ halftone/printer.py  可微打印模拟器（FilmSimulator 主线 / PrinterSimul
 halftone/ed_fs.py    FS 式逐列串行误差扩散（推理后处理，#32/#35/#42）
 halftone/losses.py   HVS 低频损失 + 孤立点惩罚（1-bit 单通道）
 halftone/data.py     数据加载（RgbCrops）
-data/images/         训练图（灰度）
-runs/                训练产物（cmyk_* 为 CMYK 历史归档，gitignore 不入库）
+data/images_gray/    训练图（灰度，默认目录）
+runs/                训练产物（CMYK 历史归档已删除，现仅存 onebit/smoke）
 out/                 推理产物
 ```

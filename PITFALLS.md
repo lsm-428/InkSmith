@@ -18,7 +18,15 @@
 >
 > ⚠ **#50 = CMYK 2-bit 全彩路线整体移除（2026-10-21）**。本文件中 #16–#30、
 > #35–#36、#39–#41、#44–#46 属该路线的实证记录，作为归档保留（编号连续、
-> 结论仍被引用），不再对应可运行代码。
+> 结论仍被引用），不再对应可运行代码。同日历史权重与 CMYK 训练数据
+> （`runs/cmyk_sd*/`、`runs/keep/`、`data/images*`、`data/images_ai`）已删除，
+> 那些 ΔE 数字只剩本文件存档，磁盘不可复现。
+>
+> ⚠ **#51 = #50 删除手术后的复核修复（2026-10-21）**：8 处静默失真
+> （单段模式不续训、infer 位图极性反、compare 吞 `--ed`、webapp 硬阈值口径、
+> seed-noise 污染目标、calc_sigma 建议低于结晶下限、默认目录装彩色旧图、
+> ed_fs import 副作用）。**引用 compare/webapp 在 #51 修复前的输出时注意
+> 它们走的可能是硬阈值口径**（差 ~10dB）。
 
 ## 训练动力学（核心战场）
 
@@ -1109,8 +1117,12 @@ webapp 的 CMYK 页与 `/api/cmyk`、`gen_data.py --rgb` 彩色生成器、
 probes 中 5 个 CMYK 探针（cmyk_ed_prior/honest/lp_sweep/ml_ed/rand_w）。
 保留：`halftone/model.py` 的 `levels>1` 通用机制（soft/hard_levels、UNet 多档
 输出）、`ed_fs`（L 维通用）、`probes/decide.py`、`probes/onebit_ctl.py`（1-bit 对照）。
-历史权重留在磁盘 `runs/cmyk_sd*/`、`runs/keep/`（gitignore 不入库）；复现评测
-数字须 checkout `5714501`。
+历史权重最初留在磁盘 `runs/cmyk_sd*/`、`runs/keep/`（gitignore 不入库）；
+**同日经用户决定一并删除**——连同 CMYK 训练数据 `data/images`（800 张彩色）、
+`data/images_ai`（1000 张 SD 图）与 CMYK 评测产物（`out/cmyk*`、`out/dotgain`、
+`out/rip_gs`），共释放 ~660M；`gen_ai.py` 保留备用。本条及 #16–#48 的 ΔE 数字
+自此**只剩存档、磁盘不可复现**（代码层 checkout `5714501`，数据须用 `gen_ai.py`
+/旧 `gen_data.py --rgb` 重造，重训不保证同值）。
 
 **理由链**（三步，全部有实证编号）：
 1. **算法层已被证伪**：在"复刻 ICC 连续调分离"目标下，#45/#46 证明 NN 理论
@@ -1137,3 +1149,45 @@ probes 中 5 个 CMYK 探针（cmyk_ed_prior/honest/lp_sweep/ml_ed/rand_w）。
 **教训**：一条路线的负结果被严谨证明之后，**及时整体删除它本身是研究纪律的一部分**。
 保留"以后可能用得上"的死代码会持续消耗审核与文档维护成本（本轮 B1–B5 里两个
 就是 CMYK 旁路产物）；要归档的是**结论**（本条 + #45/#46），代码交给 git 历史。
+
+### 51. CMYK 删除手术留下的 8 处静默失真（2026-10-21 复核修复）
+
+**背景**：#50 删完 CMYK 后做一次代码复核，发现 8 个问题，全是"不报错但结论错"
+一类，已全部修复并回归验证。逐条（按危险度）：
+
+1. **单段模式 `--resume` 语义拧了**：`main` 传 `resume=args.resume`，而 argparse
+   默认 False——文档推荐的 `--rounds 1 --hard-ste` 微调入口不加 `--resume` 就
+   从**随机权重**开始硬 STE，正是 #1 禁止的必死路径，且静默。编排模式反而硬编码
+   `resume=True`。修法：反转为**默认续训**，从零须显式 `--no-resume`（对齐 #38
+   "默认同名续到旧权重"的既有约定）。
+2. **`eval.py infer` 位图极性与全库相反**：存 `ink*255`（墨=白）却打印"1=墨，
+   直接可打"；`one`/`webapp`/inkcov 存的都是 `(1-ink)*255`（墨=黑）。唯一号称
+   "可直接上机"的产物恰是其余所有路线的负片。修法：统一**墨=黑**。同 #43 族
+   ——口径不一致直接颠倒结论。
+3. **`compare` 收了 `--ed` 却不透传**：`triplet(img, a, dpi)` 漏 `ed=`，于是
+   `compare` 静默比硬阈值口径（14.8dB regime），而铁律 3 说推理必须 ED。两 ckpt
+   对比建在错机制上。修法：透传 `ed=args.ed`。
+4. **webapp 走硬阈值 + 每请求重载 ckpt**：`process_one`/`wedge` 不传 ed（违铁律 3）；
+   `_gray_mode(ckpt)` 每个 POST 重新 `torch.load` 一遍只为查一个 1-bit args 里
+   根本不存在的 `cmyk` 键。修法：默认 ed=True（与 eval 同口径），GRAY_MODE 启动
+   判一次（用 `out_ch==1 and levels==1`，非删除的键）；删 `_CACHE`/`get_model` 死代码。
+5. **`--seed-noise` 与注释矛盾**：注释"只加输入不加目标"，代码给 `target` 加噪
+   后**同时**用作模型输入和损失目标——#13 实验无法按文档意图做。修法：拆 `x_in`，
+   损失用干净目标。
+6. **`calc_sigma.py` 打印违反铁律 2 的命令**：默认输出 `--sigma-um 12.5 --dpi 720`
+   = σ 0.35px < 1.4px 结晶下限（#11 退火躺平）。一个"σ 出处可溯"的脚本给注定
+   失败的配方。修法：σ<1.4px 时打显式警告 + 修正示例。
+7. **默认目录 `data/images` 装着 800 张 CMYK 彩色旧图**：编排"空则重建"只查存在性
+   不查内容，默认命令静默拿旧 RGB 的 0 通道训练。修法：默认目录全线改
+   `data/images_gray`（train/gen_data/data.py/eval data 子命令），自动重建写向
+   `--data` 指定目录。
+8. **`ed_fs.py` import 副作用**：模块顶层 `sys.path.insert` + `set_num_threads(20)`
+   泄漏给所有导入方；docstring 引用已删的 `ed.py`。修法：只留 `import torch`，
+   出处标注改 git 提交号。
+
+**教训**：删一条路线不是删代码就完事——手术会改变**幸存路径的默认值/口径是否
+仍自洽**（#50 删 CMYK → 默认目录里的数据变陈旧、compare 的 ED 语义、webapp 的
+判定键全受影响）。复核必做的三件事：① 每个 CLI 参数**收到即透传**（grep 形参在
+调用点是否落地）；② 基线/被测的**极性、口径、默认机制**逐项对齐（#43/#6 的泛化）；
+③ "空则生成""存在则跳过"这类**存在性检查要升级成内容检查**，否则旧数据顶替。
+数字回归（`batch --ed` 24.67/25.82）是这些修复的安全网——改前改后逐位一致才敢提交。

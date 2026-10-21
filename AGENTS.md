@@ -5,8 +5,10 @@
 （非吸收基材上复刻连续调厚度图），主线 **1-bit film**，下一步 **2-bit film**。
 
 > 2026-10-21：**CMYK 2-bit 全彩路线已整体移除**（代码删除）。研究结论归档在
-> PITFALLS.md #16–#30/#35–#48。移除理由与决策链见 PITFALLS #50。历史权重仍在
-> 磁盘（`runs/cmyk_sd*/`、`runs/keep/`），要复现那些 ΔE 数字须 checkout `5714501`。
+> PITFALLS.md #16–#30/#35–#48。移除理由与决策链见 PITFALLS #50。**历史权重与
+> 数据已一并删除**（`runs/cmyk_sd*/`、`runs/keep/`、`data/images*` 彩色集、
+> `data/images_ai`）——那些 ΔE 数字只剩存档记录，磁盘上不可复现；代码层
+> 复现须 checkout `5714501` 并用 `gen_ai.py` 重新造数据重训（不保证同值）。
 
 Python + PyTorch，无构建系统、无 CI、**无单元测试**。回归 = `train.py --smoke` + `eval.py batch --ed`。
 
@@ -15,9 +17,11 @@ Python + PyTorch，无构建系统、无 CI、**无单元测试**。回归 = `tr
   （**--ed 仍差 1.15，12/12 全输**）、GS **24.67**（打平）。
 - `--ed` 下模型权重贡献 **+0.02dB**（零 logits 也 24.67，PITFALLS #45/#11）。
   **膜基线性物理下逐像素决策赢不了 FS 是已证明的结构性结论，不是没调好参。**
-- 数据：`data/images_gray`（500 张脚本合成灰度）为 1-bit 训练集；`data/images`
-  为 `train.py` 默认目录（编排模式空则自动重建）。SD 图 `data/images_ai` 随
-  CMYK 路线停用（膜层是灰度厚度图，不需要彩色数据）。
+- 数据：`data/images_gray`（500 张脚本合成灰度）为 1-bit 训练集，**也是
+  `train.py`/`gen_data.py` 的默认目录**（编排模式空则自动重建到 `--data` 指定
+  目录）。CMYK 时代的 `data/images`（彩色）与 `data/images_ai`（SD 图）已随
+  路线于 2026-10-21 **删除**（膜层是灰度厚度图，不需要彩色数据；`gen_ai.py`
+  保留备用）。
 
 ## 文档优先级（会冲突，按此顺序信）
 
@@ -36,7 +40,7 @@ uv sync                       # torch 2.7.1+cu118，pyproject 钉死
 # === 训练（默认自动编排：退火多轮 -> 硬 STE 微调）===
 uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/onebit
 uv run python train.py --smoke     # ~10 秒冒烟；改代码后先跑这个
-uv run python train.py --rounds 1 --epochs 20 --hard-ste ...  # 手工单段（一般不用）
+uv run python train.py --rounds 1 --epochs 20 --hard-ste ...  # 手工单段（一般不用；默认续 last.pt，从零须 --no-resume）
 
 # === eval.py：评测 2 + 诊断 4 子命令 ===
 uv run python eval.py one   图.jpg --ckpt runs/onebit/best.pt --ed   # 单图三方 + inkcov
@@ -45,7 +49,7 @@ uv run python eval.py infer 图.jpg   --ckpt runs/onebit/best.pt --ed   # 出打
 uv run python eval.py wedge --ckpt runs/onebit/best.pt --ed   # 灰度尺分段偏差+条纹检测（改配方前必跑）
 uv run python eval.py data        # 训练集平坦区/灰阶分布
 uv run python eval.py norm        # 网络能否区分绝对灰阶
-uv run python eval.py compare --a A.pt --b B.pt        # 两 ckpt 逐一对比
+uv run python eval.py compare --a A.pt --b B.pt --ed     # 两 ckpt 逐一对比（同样必加 --ed，#51 修复后才真正透传）
 
 # === 其他 ===
 uv run python webapp.py                 # 网页对照（默认 runs/onebit/best.pt，8123）
@@ -53,7 +57,8 @@ uv run python gen_data.py --n 500       # 生成合成灰度图
 uv run python calc_sigma.py             # σ 出处计算（读仓库外 printheads.json）
 ```
 
-- `--out` 决定实验目录，勿与 paper 实验混用（默认 `resume=True`，同名会续到旧权重，PITFALLS #38）。
+- `--out` 决定实验目录，勿与 paper 实验混用（**默认续训**——编排和单段都是，
+  同名会续到旧权重，PITFALLS #38；从零训练须显式 `--no-resume`）。
 - `--rounds 1` 是单段模式，`--epochs` 才生效；默认 `--rounds 4` 走自动编排
   （温度几何退火 1.0→0.3→0.09→0.03、w_bin 逐轮加强 0.05·轮、按孤立点率/psnr 自动调参）。
   ⚠ w_bin 逐轮加强在 2026-10-21 之前是**死代码**（PITFALLS #47，已修）。
@@ -69,7 +74,8 @@ train.py        训练：train_once(单段) + main(自动编排多轮/调参/硬
 eval.py         评测+诊断七合一（共用 triplet 跑三条路线）：
                 infer(位图) | one(单图三方) | batch(批量三方) | wedge(灰度尺/条纹) |
                 data(数据集) | norm(架构) | compare(双ckpt)
-webapp.py       网页版对照（1-bit 三路线；import eval.triplet 复用评测核心）
+webapp.py       网页版对照（1-bit 三路线；import eval.triplet 复用评测核心；
+                **默认走 ED 口径**，与 eval --ed 一致——#51 前曾是硬阈值，差 ~10dB）
 gen_data.py     合成灰度训练图（渐变/斑块/分形/几何/条纹/混合）
 calc_sigma.py   喷头参数 + 实测铺展 -> σ 计算器（出处可溯）
 halftone/model.py     U-Net + soft/hard_binarize(1-bit) + soft/hard_levels(多档，2-bit film 复用)
@@ -85,8 +91,8 @@ halftone/data.py      数据加载（RgbCrops，灰度存 3 通道，训练取 [
 - 评测底层（psnr / FS / GS 基线 / inkcov / ckpt 重建 / film 目标反相）都在
   `eval.py` 顶层，`webapp.py` 直接 import 复用——不要再拆新模块。
 - 权重是 `{"model","args"}`，infer/eval/webapp 从 ckpt 重建模型和打印机 →
-  **改 argparse 默认值不影响已有 ckpt**；`levels>1` 的 ckpt 当前只有历史 CMYK
-  权重，1-bit 主线 ckpt 恒 `levels=1`。
+  **改 argparse 默认值不影响已有 ckpt**；历史 CMYK 权重（唯一 `levels>1` 的）
+  已于 2026-10-21 删除，磁盘上现存 ckpt 恒 `levels=1`。
 - film 语义：灰度 = 相对膜厚（1=满覆盖），eval/webapp 自动**反相** FS/GS 输入
   对齐（`film_target_and_base`）；自写基线别漏这步。
 - σ 换算：film 下 `σ[px]=σ[µm]×dpi/25400`；位图与 dpi 无关，`--dpi` 只影响预览/评估渲染。
@@ -114,7 +120,7 @@ halftone/data.py      数据加载（RgbCrops，灰度存 3 通道，训练取 [
   判据：`/proc/driver/nvidia/version` 有内容 + `lsmod|grep nvidia` 有模块 ⇒ 驱动正常（#20）。
 - **同一时间只跑一个 uv 进程**（缓存锁冲突，先 `pgrep -af uv`，#10）。锁冲突可用 `.venv/bin/python`。
 - 训练必须落盘：`train.log`（append+行缓冲）+ `pipeline_log.jsonl`（逐轮），后台超时被杀这是唯一幸存记录（#8）。
-- 目录：训练图 `data/images/`（或 `--data` 指定），验证集 `data/val/`（种子 123 固定 30 张，勿混训练集，
+- 目录：训练图 `data/images_gray/`（默认，或 `--data` 指定），验证集 `data/val/`（种子 123 固定 30 张，勿混训练集，
   丢失重建 `gen_data.py --n 30 --seed 123 --out data/val`），权重 `runs/<实验>/`，产物 `out/`。
   `data/`、`runs/`、`out/`、`.venv/` 都在 .gitignore。
 - ghostscript 不吃 PNG，inkcov 前需 PIL 包 PDF（`eval.py one` 已处理）。

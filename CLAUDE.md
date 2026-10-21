@@ -13,9 +13,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
 - **CMYK 2-bit 全彩路线已于 2026-10-21 整体移除**（代码删除）。它的研究结论完整
   归档在 PITFALLS.md #16–#30/#35–#48，移除决策链见 #50：在"复刻 ICC 连续调分离"
   目标下，网络理论天花板 = 经典多档误差扩散（ΔE00 2.21），模型贡献被 ED 洗成 0，
-  且项目裁判是膜层工艺而非彩色数码打印——该路线没有增量价值。历史权重在磁盘
-  （`runs/cmyk_sd*/`、`runs/keep/`，gitignore 不入库），复现其 ΔE 数字须 checkout
-  git 提交 `5714501`。
+  且项目裁判是膜层工艺而非彩色数码打印——该路线没有增量价值。历史权重与数据
+  （`runs/cmyk_sd*/`、`runs/keep/`、`data/images*` 彩色集、`data/images_ai`）已于
+  2026-10-21 一并删除（均在 gitignore，不进 git）；那些 ΔE 数字只剩 PITFALLS
+  存档记录，磁盘上不可复现。
 - 核心设计：**打印物理焊进损失函数**。训练时前向经过可微打印模拟器（膜基=线性体积
   叠加，`FilmSimulator`），loss 在"模拟膜厚 vs 目标图"上算；推理只做硬阈值/ED-FS。
   `sigma-um`/`sigma`/`dpi` 是物理参数（实测可溯，`calc_sigma.py`），不是画质调参旋钮。

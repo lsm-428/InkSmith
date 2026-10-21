@@ -15,8 +15,9 @@ Floyd–Steinberg 误差扩散流程。**项目目标 = 膜层打印**（非吸�
 > [PITFALLS.md](PITFALLS.md) #16–#30、#35–#48）。理由：项目裁判是膜层工艺
 > 而非传统数码打印；#45/#46 已证明在"复刻 ICC 连续调"目标下 NN 上界 ≈
 > 30 行经典多档 ED（ΔE00 2.21）、模型贡献为 0——该路线没有增量价值。
-> 历史权重仍在磁盘（`runs/cmyk_sd*/`、`runs/keep/`），复现评测需回到
-> git 提交 `5714501`。
+> 历史权重与数据（`runs/cmyk_sd*/`、`runs/keep/`、`data/images_ai` 等）已一并
+> 删除——那些 ΔE 数字只存档于 PITFALLS.md，磁盘上不可复现（代码见 git 提交
+> `5714501`，`gen_ai.py` 保留备用）。
 
 ## 原理（1-bit film 主线）
 
@@ -56,7 +57,8 @@ uv run python train.py --printer film --sigma-um 25 --dpi 1440 --out runs/onebit
 
 # 推理：出打印位图 + 模拟预览（--ed 必须加）
 uv run python eval.py infer photo.jpg --ckpt runs/onebit/best.pt --ed --out out/photo
-# 产出 out/photo_bitmap.png（0/1 打印位图）与 out/photo_preview.png（模拟膜厚效果）
+# 产出 out/photo_bitmap.png（打印位图，**墨=黑/0**，与 one/webapp 落盘口径一致）
+#       与 out/photo_preview.png（模拟膜厚效果）
 
 # 三方对照（模型 vs Floyd–Steinberg vs Ghostscript 筛网）
 uv run python eval.py one photo.jpg --ckpt runs/onebit/best.pt --ed
@@ -64,7 +66,7 @@ uv run python eval.py batch --ckpt runs/onebit/best.pt --ed   # 12 张：24.67 v
 
 # 诊断（改配方前必跑）
 uv run python eval.py wedge --ckpt runs/onebit/best.pt --ed   # 灰度尺分段偏差 + 条纹检测
-uv run python webapp.py                                     # 网页对照（默认 runs/onebit/best.pt）
+uv run python webapp.py                                     # 网页对照（默认 runs/onebit/best.pt；模型路线默认 ED）
 ```
 
 完整命令与架构见 [AGENTS.md](AGENTS.md)；分阶段操作手册见 [WORKFLOW.md](WORKFLOW.md)，
