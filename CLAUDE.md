@@ -24,7 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with th
   2D 误差流压成 1D，#52）；**主战场=引擎升级（蛇形逐行/2D 核），验收线=
   纯 ED ≥ FS**。NN 时代数字（14.80/24.67）别与现役混引。
 - **dithering 的正确来源**：决策机制的属性，不是损失/先验能鼓励出来的。
-  `halftone/ed_fs.py` 串行误差扩散天然产生蓝噪声；权重和必须严格为 1
+  `ed_fs.py` 串行误差扩散天然产生蓝噪声；权重和必须严格为 1
   （#42，否则覆盖率两端塌陷）。
 - one-pass 物理账：`ink∈{0,1}` 每像素至多一滴；`T_max=V/p²`（dpi 是量程旋钮）；
   100µm 窗波动下限由滴数 `k=T̄·s²/V` 决定、与 dpi 无关（薄端细度靠档位，#52）。

@@ -71,7 +71,7 @@ uv run python eval.py wedge                # 灰度尺分段偏差 + 行墨量 s
    别与现役混引（#52）；
 2. `wedge`：分段覆盖偏差 |x|<0.05 且 **ED 行墨量 std < 0.05**（>0.05 = 条纹
    退化解 #12；现状 0.0027，已是引擎应有水平）；
-3. 改 `halftone/ed_fs.py` 前后各跑一遍 `batch + wedge`（这就是新回归，
+3. 改 `ed_fs.py` 前后各跑一遍 `batch + wedge`（这就是新回归，
    替代原 `train --smoke`）。
 
 症状 → 调法：
@@ -122,8 +122,8 @@ uv run python eval.py wedge                # 灰度尺分段偏差 + 行墨量 s
 ```
 eval.py              推理+评测+诊断：infer / one / batch / wedge（无权重、无 ckpt）
 webapp.py            网页版对照（ED/FS/GS 三路线，默认 ED；无 ckpt）
-halftone/ed_fs.py    主引擎：FS 式逐列串行误差扩散（#32/#42；升级主战场 #52）
-halftone/printer.py  打印模拟器（FilmSimulator 主线 / PrinterSimulator 纸基保留；
+ed_fs.py             主引擎：FS 式逐列串行误差扩散（#32/#42；升级主战场 #52）
+printer.py           打印模拟器（FilmSimulator 主线 / PrinterSimulator 纸基保留；
                      现用作评测渲染器，可微性留给 DBS/CVO）
 calc_sigma.py        喷头参数 + 实测铺展 -> σ 计算器
 gen_ai.py            SD 内容图生成（备用，主线不依赖）

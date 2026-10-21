@@ -1210,6 +1210,8 @@ probes 中 5 个 CMYK 探针（cmyk_ed_prior/honest/lp_sweep/ml_ed/rand_w）。
 （备用内容图生成）。NN 权重与训练数据（`runs/onebit`、`runs/smoke`、
 `data/images_gray`、`data/val`，共 ~39M，gitignore 不入库）经用户决定**一并删除**
 ——沿用 #50 纪律：负结果被证明后整体移除是研究纪律；评测集 `data/photos_val` 保留。
+（同日后续扁平化：`halftone/` 包仅剩 2 文件，`ed_fs.py`/`printer.py` 移至仓库根目录，
+包目录删除——本条与 #50 等历史条目里的 `halftone/*.py` 路径是当时事实，不改。）
 
 **决定性新证据（删前最后探针：同一 ckpt、同一 `ed_fs`，photos_val 12 张逐张对比
 「模型 logits 先验」vs「零先验」）**：

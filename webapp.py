@@ -23,7 +23,7 @@ from PIL import Image
 
 from eval import GS_WORKDIR, ed_halftone, film_target_and_base, floyd_steinberg, \
     gs_halftone, psnr
-from halftone.printer import FilmSimulator
+from printer import FilmSimulator
 
 MAX_SIDE = 512          # 单图最长边，控制显存与传输体积
 SIGMA_UM = 25.0         # 已验证配方：1.42px@1440dpi（PITFALLS #11）

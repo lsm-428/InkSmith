@@ -29,7 +29,7 @@ import torch.nn.functional as F
 from PIL import Image
 from torchvision.utils import save_image
 
-from halftone.printer import build_printer
+from printer import build_printer
 
 GS_WORKDIR = Path("out/gs")
 
@@ -113,7 +113,7 @@ def gs_inkcov(bitmap_path):
 # ---------------------------------------------------------------- 主引擎：ED-FS
 
 def ed_halftone(target_cov, device, bias_gain=4.0):
-    """ED-FS 逐列串行误差扩散（本项目主引擎，`halftone/ed_fs.py`）。
+    """ED-FS 逐列串行误差扩散（本项目主引擎，根目录 `ed_fs.py`）。
 
     1-bit 无「档位」维：logits 恒零（无先验——原模型先验贡献实测 +0.02dB≈0，
     #45；NN 已于 #52 整体移除），决策完全由 buf 偏置引导：buf>0.5 落墨、
@@ -123,7 +123,7 @@ def ed_halftone(target_cov, device, bias_gain=4.0):
     target_cov 是**目标墨覆盖率**，不是图像灰度：film 下灰度=膜厚=覆盖率；
     paper 下灰度=打印后亮度（1=白纸）故覆盖率=1-灰度。
     """
-    from halftone.ed_fs import ed_fs
+    from ed_fs import ed_fs
     lv = torch.tensor([0.0, 1.0], device=device)
     z = torch.zeros(*target_cov.shape, 2, device=device)
     return ed_fs(z, target_cov, lv, bias_gain=bias_gain)[..., 1]

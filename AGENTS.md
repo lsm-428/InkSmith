@@ -71,14 +71,17 @@ eval.py         推理+评测+诊断四合一（ED/FS/GS 三路线，无 ckpt）
                 底层（psnr / ed_halftone / FS / GS 基线 / inkcov / film 目标反相）
                 都在顶层，webapp.py 直接 import 复用——不要再拆新模块。
 webapp.py       网页版对照（ED/FS/GS 三路线；import eval 复用核心；无 ckpt）
-halftone/ed_fs.py     主引擎：FS 式逐列串行误差扩散（L 维通用，多档白拿）。
-                      权重和严格为 1（右7/16+右下5/16+右上3/16+右二1/16，#42）。
-                      已知短板 = 1D 误差流；蛇形/2D 核升级在此文件（#52 主战场）。
-halftone/printer.py   FilmSimulator(膜基线性体积，主线) / PrinterSimulator(纸基 exp)。
-                      现为评测渲染器；可微实现留给离线优化（DBS/CVO）复用。
+ed_fs.py        主引擎：FS 式逐列串行误差扩散（L 维通用，多档白拿）。
+                权重和严格为 1（右7/16+右下5/16+右上3/16+右二1/16，#42）。
+                已知短板 = 1D 误差流；蛇形/2D 核升级在此文件（#52 主战场）。
+printer.py      FilmSimulator(膜基线性体积，主线) / PrinterSimulator(纸基 exp)。
+                现为评测渲染器；可微实现留给离线优化（DBS/CVO）复用。
 calc_sigma.py   喷头参数 + 实测铺展 -> σ 计算器（出处可溯）
 gen_ai.py       SD 内容图生成（备用，主线不依赖）
 ```
+
+（仓库结构 2026-10-21 扁平化：`halftone/` 包随 NN 拆除后只剩 2 个文件，
+已移到根目录；PITFALLS 历史条目里的 `halftone/*.py` 路径是当时事实，不改。）
 
 - film 语义：灰度 = 相对膜厚（1=满覆盖），FS/GS 基线必须**反相**输入对齐
   （`film_target_and_base`，pad 而非 resize，#43）；自写基线别漏这步。
