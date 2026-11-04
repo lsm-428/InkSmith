@@ -3,7 +3,7 @@ r"""DMC Samba 一套 ML（HeadType 1117）。
 
 数据现状（实测核实）
 --------------------
-本机 `D:\Gitee\LP50\AutoADA\share\NOA89-test-01..09` 共 **108 孔 / 9 次会话**，
+本机 `D:\Gitee\LP50\ML\share\NOA89-test-01..09` 共 **108 孔 / 9 次会话**，
 波形取值 4 组：
     Pulse0Voltage ∈ {34, 38, 40}、Pulse0Width ∈ {1.9, 2.2}
     Pulse0Tail = 4.5、Slewrate = 40、VoltageSupply = 120、Frequency = 1000
@@ -43,7 +43,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from ..dataset import Measurement, by_head, load_all
+from ..dataset import Measurement, by_head, load_all, resolve_roots
 from ..headml import (CLS_KEYS, MODEL_ORDER, REG_KEYS, HeadDataset, best_by,
                       evaluate_classification, evaluate_leave_nozzle_out,
                       evaluate_leave_nozzle_out_cls, evaluate_regression,
@@ -133,14 +133,20 @@ def nozzle_features(nozzle: Optional[int]) -> Optional[List[float]]:
 
 
 def build(measurements: Optional[List[Measurement]] = None,
-          with_nozzle: bool = True) -> HeadDataset:
+          with_nozzle: bool = True,
+          roots: Optional[List[str]] = None) -> HeadDataset:
     """构建数据集。
 
     `with_nozzle=False` 时只保留波形特征（用于迁移性评估的基线）。
     无论哪种情况，**喷嘴号都记进 `groups_nozzle`**，
     使 leave-nozzle-out 评估在任何特征配置下都可用。
+
+    `roots` 指定要扫描的数据根（`None` = 用 `dataset.DEFAULT_ROOTS`）。
+    ⚠️ 传了 `roots` 就**只**扫这些根——上层的 `resolve_roots()` 负责决定
+    「默认根 + 新扫根」还是「只用新扫根」。
     """
-    ms = by_head(measurements if measurements is not None else load_all(), HEAD_NAME)
+    ms = by_head(measurements if measurements is not None
+                 else load_all(roots), HEAD_NAME)
     feats = FEATURES if with_nozzle else FEATURES_WAVE
     X, yc, yv, g, gn, meta = [], [], [], [], [], []
     for m in ms:
@@ -436,13 +442,30 @@ def main(argv=None) -> int:
                     help="不使用孔号位置特征（用于对照）")
     ap.add_argument("--leave-nozzle-out", action="store_true",
                     help="额外做按孔分组的迁移性评估")
+    ap.add_argument("--data", action="append", metavar="ROOT", default=[],
+                    help="追加的数据根目录（可重复）。指向机台上新扫的 ADA 落盘根，"
+                         "如 \"C:\\\\LP50\\\\ScreenCaptures\\\\2026-11-05_09.30.00_Measurement\"。"
+                         "默认与既有数据合并训练；加 --replace-data 则只用这里指定的")
+    ap.add_argument("--replace-data", action="store_true",
+                    help="丢弃默认数据源，只用 --data 指定的根")
     args = ap.parse_args(argv)
 
-    ds = build(with_nozzle=not args.no_nozzle_features)
+    roots = resolve_roots(args.data, replace=args.replace_data)
+    missing = [r for r in roots if not os.path.isdir(r)]
+    if missing:
+        print("⚠️ 以下数据根不存在，已跳过：%s" % ", ".join(missing))
+    print("数据根：%s" % (" | ".join(roots)))
+
+    ds = build(with_nozzle=not args.no_nozzle_features, roots=roots)
     print("# DMC Samba 一套 ML（HeadType 1117）")
     print(ds.describe())
     if ds.n < 10:
         print("\n样本不足，无法训练。")
+        print("  可能原因：")
+        print("  1) 实测数据不在数据根 —— 实测资产**不入库**（.gitignore 排除 ML/share/），")
+        print("     需自行采集，或用 --data <落盘根> 指向机台上扫出的数据；")
+        print("  2) 数据根里的喷头不是 DMC Samba —— 本模块只取 HeadType 1117；")
+        print("  3) 数据根层级选错 —— 要指到**含组合子目录**的那一层。")
         return 1
 
     cls = evaluate_classification(ds.X, ds.y_cls, ds.groups)
@@ -451,7 +474,7 @@ def main(argv=None) -> int:
     # ---- 对照：仅波形特征（不含孔号位置）----
     reg_wave = None
     if not args.no_nozzle_features:
-        ds_wave = build(with_nozzle=False)
+        ds_wave = build(with_nozzle=False, roots=roots)
         reg_wave = evaluate_regression(ds_wave.X, ds_wave.y_vel, ds_wave.groups)
 
     # ---- 迁移性：leave-nozzle-out（按孔分组）----

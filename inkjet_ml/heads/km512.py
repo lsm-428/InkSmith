@@ -48,7 +48,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from ..dataset import Measurement, by_head, load_all
+from ..dataset import Measurement, by_head, load_all, resolve_roots
 from ..headml import (CLS_KEYS, MODEL_ORDER, REG_KEYS, evaluate_classification,
                       evaluate_regression, best_by, _fmt_table, save_json)
 
@@ -103,8 +103,11 @@ def resolve_settings(m: Measurement) -> Optional[Dict[str, float]]:
     return out
 
 
-def build(measurements: Optional[List[Measurement]] = None) -> Optional["KM512Dataset"]:
-    ms = by_head(measurements if measurements is not None else load_all(), HEAD_NAME)
+def build(measurements: Optional[List[Measurement]] = None,
+          roots: Optional[List[str]] = None) -> Optional["KM512Dataset"]:
+    """`roots` 指定要扫描的数据根（`None` = 用 `dataset.DEFAULT_ROOTS`）。"""
+    ms = by_head(measurements if measurements is not None
+                 else load_all(roots), HEAD_NAME)
     rows = []
     for m in ms:
         f = resolve_settings(m)
@@ -170,10 +173,21 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="KM512 ML")
     ap.add_argument("--selftest", action="store_true", help="只跑管线自检")
     ap.add_argument("--out", default=os.path.join("results", "km512"))
+    ap.add_argument("--data", action="append", metavar="ROOT", default=[],
+                    help="追加的数据根目录（可重复）。指向机台上新扫的 ADA 落盘根；"
+                         "默认与既有数据合并训练，加 --replace-data 则只用这里指定的")
+    ap.add_argument("--replace-data", action="store_true",
+                    help="丢弃默认数据源，只用 --data 指定的根")
     args = ap.parse_args(argv)
 
+    roots = resolve_roots(args.data, replace=args.replace_data)
+    missing = [r for r in roots if not os.path.isdir(r)]
+    if missing:
+        print("⚠️ 以下数据根不存在，已跳过：%s" % ", ".join(missing))
+    print("数据根：%s" % (" | ".join(roots)))
+
     print("# KM512 一套 ML（HeadType 3）")
-    ds = build()
+    ds = build(roots=roots)
     if ds is None:
         print("本机暂无 KM512 实测数据（876 组里只有 DMC Samba 108 孔 + Spectra 768 孔）。")
         print("交付内容：可训练管线 + 特征映射，数据接入即可训练。\n")

@@ -1,3 +1,6 @@
+*.bmp
+_待删除/
+
 # ---- Python / ML ----
 # 虚拟环境与依赖（ML/.venv 约 345 MB，不入库）
 .venv/
@@ -19,7 +22,19 @@ ML/docs/DropQCS/
 ML/docs/evidence/*.pdf
 ML/docs/evidence/*.ods
 
-# 其他
+# ---- 不入库的大件 / 临时产物 ----
+# 机台录屏（视频，几十 MB）
+*.mp4
+# 厂商集成包（二进制归档）
+*.rar
+# 机台安装目录整份拷贝（AOA 流程等，约 350 MB）
+Recipes/22 AOA/
+# 第三方集成文档（随安装包分发）
+AutoADA/LP50-integration-en/
+# ACL 恢复工具输出（临时）
+acl-recovery/
+
+# ---- 其他 ----
 .DS_Store
 Thumbs.db
-.~lock.*
+.~lock.*#

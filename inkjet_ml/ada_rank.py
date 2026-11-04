@@ -5,7 +5,7 @@
 ----
 `ada.py` 负责"要填什么范围、会得到多少张图"，本模块负责**反过来读**：
 把一次 ADA 扫描落盘的目录树，还原成"每个波形组合一行"的汇总表，
-按与 DropQCS 相同的判据排序，直接指出**哪个波形组合最优**。
+按与 `ada.py --rules` **同一套默认值**的判据排序，直接指出**哪个波形组合最优**。
 
 为什么要写它
 ------------
@@ -14,17 +14,29 @@ ADA 一次全析因扫描会落 `成百上千` 张 `noz*.png` / `Results.csv`，
 DropQCS 的规则引擎是对**单次测量（一套波形、固定一孔→全孔）**做判据的，
 它不知道"哪个波形组合更好"。这一环就是：**按波形组合聚类 → 算合格率 → 排序**。
 
-判据口径（与 `ada.py --rules` 生成的 DropQCS 规则逐条一致）
+判据口径（默认值与 `ada.py --rules` 同源，保证两侧结论可比）
 -----------------------------------------------------------
     [NrDroplets] == 1            单滴、无卫星
     [SpeedAverage] ∈ [lo, hi]    速度落在目标邻域
     |[AngleAverage]| <= angle_max 飞行方向正
 → 三条全过的孔记为「合格孔」，组合的 `pass_rate` = 合格孔 / 测孔。
 
+**与 DropQCS 规则引擎的分工**（2026-11-04 逐项核实 `Rules\\*.RulesConfig.xml` 后明确）：
+本模块**不是** DropQCS 的复刻，而是它的**只读离线分析器**——
+  · DropQCS：判据是 NCalc 表达式，**可编程**（相对判据 / `[Result]` 链式 / 双头判据 /
+    位置判据都支持），且会**真的动作**（Reject 停用孔 / Stop 停机 / Purge / Wipe 等维护动作）；
+  · 本模块：判据是**硬编码三条**，**不产生任何动作**，只出排序表。
+本模块独有的能力：**跨波形组合寻优** —— DropQCS 一次只测一套固定波形、
+只对单次测量判合格与否，它不知道"哪个波形组合更好"。
+
+⚠️ **默认值必须与 `ada.py --rules` 一致**（共用 `ada.DEFAULT_*`），
+否则同一批数据在机台规则与离线排序下会得到不同结论。
+（历史上本模块默认 5.0 m/s → 4.0–6.0，而 `--rules` 是 3.5 → 2.8–4.2，已修正。）
+
 用法
 ----
-    python -m inkjet_ml.ada_rank "C:\\LP50\\ScreenCaptures\\Measurement 1"
-    python -m inkjet_ml.ada_rank <扫描根目录> --target-speed 5 --speed-margin 0.2
+    python -m inkjet_ml.ada_rank "<扫描落盘根目录>"
+    python -m inkjet_ml.ada_rank <扫描根目录> --target-speed 3.5 --speed-margin 0.2
     python -m inkjet_ml.ada_rank <扫描根目录> --top 20 --csv out.csv
 """
 
@@ -38,6 +50,14 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
+
+# 判据默认值与 `ada.py --rules` **共用同一来源**（DEFAULT_* / speed_band），
+# 保证"机台规则"与"离线排序"两侧口径一致 —— 否则同一批数据两边结论会不同。
+from .ada import (DEFAULT_ANGLE_MAX, DEFAULT_SPEED_MARGIN, DEFAULT_TARGET_SPEED,
+                  speed_band)
+from .dropqcs import RuleSet, evaluate_ruleset, load_ruleset
+from .dropqcs_vars import read_results_csv
+from .ncalc import NCalcError, parse_expr
 
 # --------------------------------------------------------------------------- #
 # 目录前缀 → ADA 参数名（证据：Tools\DropAnalysis\Viewer\Parameters.xml
@@ -110,6 +130,7 @@ class NozzleRow:
     speed: Optional[float]          # SpeedAverage（多滴时 ADA 给的是第一个滴）
     volume: Optional[float]         # VolumeTotal（pl）
     angle: Optional[float]
+    rejected: bool = False          # 仅规则集路径使用：官方规则判该孔不合格
 
 
 @dataclass
@@ -118,6 +139,7 @@ class ComboResult:
     folder: str = ""
     nozzles: List[NozzleRow] = field(default_factory=list)
     scanned_params: Dict[str, str] = field(default_factory=dict)
+    n_rejected: int = 0             # 规则集路径：被官方规则判不合格的孔数
 
     # 统计
     @property
@@ -157,6 +179,12 @@ class ComboResult:
                 continue
             ok += 1
         return ok / self.n_nozzles if self.n_nozzles else 0.0
+
+    def rules_pass_rate(self) -> float:
+        """规则集路径的合格率：合格孔 / 测孔（合格 = 未被官方规则拒绝）。"""
+        if not self.n_nozzles:
+            return 0.0
+        return (self.n_nozzles - self.n_rejected) / self.n_nozzles
 
     def describe(self) -> str:
         keys = [k for k in WAVEFORM_KEYS if k in self.combo]
@@ -220,8 +248,7 @@ def parse_results_csv(path: str) -> Optional[ComboResult]:
             nozzle=int(_f(row[i_noz[0]])) if i_noz and i_noz[0] < len(row) else None,
             nr_droplets=int(nr),
             speed=g("Speed"),
-            volume=g("Total volume"),
-            angle=g("Angle"),
+            volume=g("Total volume"),            angle=g("Angle"),
         ))
     return res if res.nozzles else None
 
@@ -254,13 +281,79 @@ def rank(combos: List[ComboResult], lo: float, hi: float,
     return sorted(combos, key=key)
 
 
+def evaluate_with_ruleset(root: str, ruleset: RuleSet) -> List[ComboResult]:
+    """用官方 DropQCS 规则集评估扫描目录树 → 每个波形组合一行。
+
+    与 `scan_tree()` 的区别：
+      · `scan_tree()` 用**硬编码三条**判据（`nr_droplets==1` + 速度带 + 角度）；
+      · 本函数用**官方规则文件**（NCalc 表达式，可编程），支持相对判据、
+        `[Result]` 链式、双头判据、位置判据等。
+
+    ⚠️ **场景边界**：**每个 `Results.csv` = 一个测量场景**，整头级统计量
+    （`[PrintheadSpeedAverage]` 等）**只在该场景内汇总**，绝不跨 `Results.csv` 池化。
+    例：`share` 下 9 个 `NOA89-test-*` → **9 个场景**，各有各的整头均值。
+    这与机台语义一致（机台上"整头"= 一次测量里的整个喷头），
+    也避免了"每个组合自比自"使相对判据退化成单组合内离散度的问题。
+
+    规则执行顺序（与机台一致）：先汇总整头统计量 → 再跑孔级规则 → 最后跑整头规则
+    （官方 `AverageSpeedWithinMargin` 等是**孔级规则却引用整头变量**，顺序不能颠倒）。
+    """
+    out: List[ComboResult] = []
+    for dp, _dn, fns in os.walk(root):
+        if "Results.csv" not in fns:
+            continue
+        csv_path = os.path.join(dp, "Results.csv")
+        try:
+            nozzles = read_results_csv(csv_path)
+        except OSError:
+            continue
+        if not nozzles:
+            continue
+        vlist = [n.variables() for n in nozzles]
+        try:
+            res = evaluate_ruleset(ruleset, vlist)
+        except NCalcError as e:
+            # 规则求值失败**不静默跳过**——否则用户会以为规则生效了
+            raise NCalcError("规则集「%s」在 %s 上求值失败：%s"
+                             % (ruleset.name, dp, e)) from e
+        c = ComboResult(folder=dp)
+        c.combo = split_combo(dp, root)
+        for nz, (_v, r) in zip(nozzles, res["nozzles"]):
+            c.nozzles.append(NozzleRow(
+                nozzle=nz.nozzle,
+                nr_droplets=nz.nr_droplets,
+                speed=nz.droplets[0].speed if nz.droplets else None,
+                volume=nz.total_volume,
+                angle=nz.droplets[0].angle if nz.droplets else None,
+                rejected=r["rejected"],
+            ))
+        c.n_rejected = res["n_rejected"]
+        out.append(c)
+    return out
+
+
 def report(combos: List[ComboResult], lo: float, hi: float,
            angle_max: float, target: float, top: int = 20,
-           csv_out: Optional[str] = None) -> None:
-    ranked = rank(combos, lo, hi, angle_max, target)
+           csv_out: Optional[str] = None,
+           ruleset: Optional[RuleSet] = None) -> None:
+    if ruleset is not None:
+        # 规则集路径：合格率由官方规则决定，排序键改用"合格率 → 速度贴近目标 → 卫星最少"
+        def key(c: ComboResult):
+            pr = c.rules_pass_rate()
+            smean = c.speed_stats()[0]
+            speed_dev = abs(smean - target) if smean is not None else 9e9
+            return (-round(pr, 6), speed_dev, c.n_satellite)
+        ranked = sorted(combos, key=key)
+    else:
+        ranked = rank(combos, lo, hi, angle_max, target)
+
     print("共解析 %d 个扫描组合（每个组合 = 一个目录下的一个 Results.csv）" % len(ranked))
-    print("判据：NrDroplets==1 且 %.2f<=Speed<=%.2f m/s 且 |Angle|<=%.1f°\n"
-          % (lo, hi, angle_max))
+    if ruleset is not None:
+        print("判据：官方规则集「%s」（%d 条孔级 + %d 条整头级）\n"
+              % (ruleset.name, len(ruleset.nozzle_rules), len(ruleset.head_rules)))
+    else:
+        print("判据：NrDroplets==1 且 %.2f<=Speed<=%.2f m/s 且 |Angle|<=%.1f°\n"
+              % (lo, hi, angle_max))
     hdr = ("%-52s %6s %6s %6s %6s %7s %7s %7s %8s"
            % ("波形组合", "孔数", "不喷", "单滴", "卫星", "合格率",
               "速度均", "速度σ", "体积均(pl)"))
@@ -268,7 +361,7 @@ def report(combos: List[ComboResult], lo: float, hi: float,
     print("-" * len(hdr))
     rows_csv = []
     for c in ranked[:top]:
-        pr = c.pass_rate(lo, hi, angle_max)
+        pr = c.rules_pass_rate() if ruleset is not None else c.pass_rate(lo, hi, angle_max)
         sm, ss, _, _, _ = c.speed_stats()
         vm, _, _, _, _ = c.volume_stats()
         print("%-52s %6d %6d %6d %6d %6.1f%% %7.2f %7.3f %8.2f"
@@ -280,6 +373,8 @@ def report(combos: List[ComboResult], lo: float, hi: float,
                    n_single=c.n_single, n_satellite=c.n_satellite,
                    pass_rate=round(pr, 4), speed_mean=sm, speed_std=ss,
                    volume_mean=vm, folder=c.folder)
+        if ruleset is not None:
+            row["n_rejected"] = c.n_rejected
         rows_csv.append(row)
     if csv_out and rows_csv:
         keys = sorted({k for r in rows_csv for k in r})
@@ -294,25 +389,58 @@ def main(argv: List[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="读取 ADA 扫描结果，按 DropQCS 判据给波形组合排序")
     ap.add_argument("root", help="扫描根目录（含 Results.csv 的那次测量目录）")
-    ap.add_argument("--target-speed", type=float, default=5.0, help="目标速度 m/s")
-    ap.add_argument("--speed-margin", type=float, default=0.20, help="速度容差")
-    ap.add_argument("--angle-max", type=float, default=2.0, help="方向容差(度)")
+    ap.add_argument("--target-speed", type=float, default=DEFAULT_TARGET_SPEED,
+                    help="目标速度 m/s（与 `ada.py --rules` 同源，默认 %.1f → 速度带 %.1f–%.1f）"
+                         % ((DEFAULT_TARGET_SPEED,) + speed_band()))
+    ap.add_argument("--speed-margin", type=float, default=DEFAULT_SPEED_MARGIN,
+                    help="速度容差百分比")
+    ap.add_argument("--angle-max", type=float, default=DEFAULT_ANGLE_MAX,
+                    help="方向容差(度)")
     ap.add_argument("--top", type=int, default=20, help="显示前 N 名")
     ap.add_argument("--csv", help="把完整排序表写到 CSV")
+    ap.add_argument("--rules", help="改用官方 DropQCS 规则集评估"
+                                  "（如 …\\Rules\\Examples\\SingleDroplet.RulesConfig.xml）；"
+                                  "不给则用内置的三条硬编码判据")
     args = ap.parse_args(argv)
 
     if not os.path.isdir(args.root):
         print("目录不存在：%s" % args.root, file=sys.stderr)
         return 2
-    combos = scan_tree(args.root)
+
+    ruleset = None
+    if args.rules:
+        try:
+            ruleset = load_ruleset(args.rules)
+        except NCalcError as e:
+            print("规则文件加载失败：%s" % e, file=sys.stderr)
+            return 2
+        print("规则集：%s（%s）" % (ruleset.name, ruleset.source))
+        print("  孔级规则 %d 条：%s" % (len(ruleset.nozzle_rules),
+                                     " / ".join(r.expression for r in ruleset.nozzle_rules)))
+        print("  整头规则 %d 条：%s" % (len(ruleset.head_rules),
+                                     " / ".join(r.expression for r in ruleset.head_rules)))
+        # 规则语法先验校验（求值前就报错，而不是跑到一半才失败）
+        for _r in ruleset.nozzle_rules + ruleset.head_rules:
+            try:
+                parse_expr(_r.expression)
+            except NCalcError as e:
+                print("规则表达式非法：%s" % e, file=sys.stderr)
+                return 2
+        try:
+            combos = evaluate_with_ruleset(args.root, ruleset)
+        except NCalcError as e:
+            print("规则求值失败：%s" % e, file=sys.stderr)
+            return 2
+    else:
+        combos = scan_tree(args.root)
     if not combos:
         print("该目录下没找到含逐孔读数的 Results.csv。\n"
               "提示：一次 ADA 扫描的每个波形组合各有一份 Results.csv，"
               "请把 root 指向那次测量的目录。", file=sys.stderr)
         return 1
-    lo = args.target_speed * (1 - args.speed_margin)
-    hi = args.target_speed * (1 + args.speed_margin)
-    report(combos, lo, hi, args.angle_max, args.target_speed, args.top, args.csv)
+    lo, hi = speed_band(args.target_speed, args.speed_margin)
+    report(combos, lo, hi, args.angle_max, args.target_speed, args.top, args.csv,
+           ruleset=ruleset)
     return 0
 
 

@@ -28,9 +28,9 @@ B. ADA 扫描维度与范围 —— `C:\\LP50\\Recipes\\95 ADA\\Advanced-Drop-An
 C. DropQCS 判据语法 —— `<LP50 V4730>\\Rules\\Default.RulesConfig.xml`
    与 `Rules\\Examples\\*.RulesConfig.xml`
    （NozzlesRule / HeadsRule + NCalc 表达式 + Reject / Accept / Stop / Jet 动作）。
-   ⚠️ 注意：`C:\\LP50` 这台机器上 `DropQCSJob` / `RulesEngine` 在 438 个程序集里
-   不存在（`C:\\LP50\\Recipes\\95 ADA-APA\\apa_measure.cs:24-26` 逐字记载），
-   判据要跑起来需使用带 ScriptSupport.dll(含 DropQCSJob) 的安装。
+   ⚠️ 注意：`C:\\LP50` 这台机器上 `DropQCSJob` / `RulesEngine` 在 317 个 DLL 全量扫描中
+   **均无命中**（2026-11-04 直接扫程序集核实）；新基线 V4730 的
+   `Release\\ScriptSupport.dll` 则含 `DropQCSJob` → 判据要跑起来需用那套安装。
 D. 速度测量 —— ADA.cs:4872-4873 `m_dDelay2 = m_dDelay1 + LedDelayIncr`（双闪成像），
    结果落盘在 Results.csv 的 `Speed`[m/s] 列与 noz*.xml 的 `<Speed>` 节点。
 E. 刻度参考 —— ADA.cs 同族流程 `Automated-Print-Optimization-*.xml`（APO）里 SUSS 对
@@ -334,7 +334,7 @@ def scan_dimensions(ada_dir: str = ADA_DIR_C,
     override = parse_recipe(recipe) if recipe else {}
     speeds = parse_update_speeds(
         viewer_dir or (NEW_LP50 + r"\Tools\DropAnalysis\Viewer"), head,
-        fallback_dirs=[r"D:\Gitee\LP50\AutoADA\share\NOA89-test-01\Parameters"])
+        fallback_dirs=[r"D:\Gitee\LP50\ML\share\NOA89-test-01\Parameters"])
 
     dims: List[ScanDim] = []
     for fp in flows:
@@ -870,20 +870,36 @@ def plan_uniform() -> DOEPlan:
 # --------------------------------------------------------------------------- #
 # DropQCS 判据
 # --------------------------------------------------------------------------- #
-def dropqcs_rules(v_target: float = 3.5, speed_margin: float = 0.20,
-                  angle_max: float = 2.0) -> str:
+#: **判据默认值的单一事实来源** —— `ada.py --rules`（生成机台规则）与
+#: `ada_rank.py`（离线排序分析）必须用同一套默认值，否则两侧结论对不上。
+#: ⚠️ **目标速度必须按实测标定**：5.0 m/s 会让合格率普遍为 0
+#: （实测速度分布 1.13–6.99 m/s，share 会话均值 2.8–4.7）。
+#: 默认取 **3.5**（容差 ±20% → 速度带 **2.8–4.2 m/s**）——实测下
+#: NOA89-test-05/06/07/08 四个会话合格率均为 100%，test-01 为 91.7%（--target-speed 4.5 时）。
+#: **每次换墨后必须用 ADA 实测重新确定。**
+DEFAULT_TARGET_SPEED = 3.5
+DEFAULT_SPEED_MARGIN = 0.20
+DEFAULT_ANGLE_MAX = 2.0
+
+
+def speed_band(v_target: float = DEFAULT_TARGET_SPEED,
+               speed_margin: float = DEFAULT_SPEED_MARGIN):
+    """目标速度 ± 容差 → (lo, hi) 速度带。`--rules` 与 `ada_rank` 共用此函数。"""
+    return (v_target * (1 - speed_margin), v_target * (1 + speed_margin))
+
+
+def dropqcs_rules(v_target: float = DEFAULT_TARGET_SPEED,
+                  speed_margin: float = DEFAULT_SPEED_MARGIN,
+                  angle_max: float = DEFAULT_ANGLE_MAX) -> str:
     """生成"找最优喷射波形"用的 DropQCS 规则集。
 
     变量名与 `Rules\\Examples\\*.RulesConfig.xml` 完全一致（大小写敏感）。
     顺序即优先级：先保证"有滴"，再保证"单滴无卫星"，再看速度、方向。
 
-    ⚠️ **目标速度必须按实测标定**：默认 5.0 m/s 会让合格率普遍为 0
-    （实测速度分布 1.13–6.99 m/s，share 会话均值 2.8–4.7）。
-    默认取 **3.5**——实测下 NOA89-test-05/06/07/08 四个会话合格率均为 100%，
-    test-01 为 91.7%（--target-speed 4.5 时）。
-    **每次换墨后必须用 ADA 实测重新确定。**
+    默认值取自 `DEFAULT_TARGET_SPEED` / `DEFAULT_SPEED_MARGIN` / `DEFAULT_ANGLE_MAX`
+    ——与 `ada_rank.py` 的离线分析**共用**，保证两侧口径一致。
     """
-    lo, hi = v_target * (1 - speed_margin), v_target * (1 + speed_margin)
+    lo, hi = speed_band(v_target, speed_margin)
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <!-- Copyright © SUSS MicroTec Netherlands B.V., All rights reserved -->
 <RulesSet xmlns:xsd="http://www.w3.org/2001/XMLSchema"
@@ -1000,11 +1016,14 @@ def main(argv: List[str] | None = None) -> int:
     ap.add_argument("--recipe", help="指定 ADA recipe 以显示配方覆盖后的值")
     ap.add_argument("--verify", action="store_true",
                     help="交叉校验：代码内的默认范围 vs 真实流程文件")
-    ap.add_argument("--target-speed", type=float, default=3.5,
+    ap.add_argument("--target-speed", type=float, default=DEFAULT_TARGET_SPEED,
                     help="判据中的目标液滴速度 m/s（**必须按实测标定**；"
-                         "默认 3.5，实测速度分布 1.13–6.99 m/s，用 5.0 会让合格率普遍为 0）")
-    ap.add_argument("--speed-margin", type=float, default=0.20, help="速度容差百分比")
-    ap.add_argument("--angle-max", type=float, default=2.0, help="飞行方向容差(度)")
+                         "默认 %.1f，实测速度分布 1.13–6.99 m/s，用 5.0 会让合格率普遍为 0）"
+                         % DEFAULT_TARGET_SPEED)
+    ap.add_argument("--speed-margin", type=float, default=DEFAULT_SPEED_MARGIN,
+                    help="速度容差百分比")
+    ap.add_argument("--angle-max", type=float, default=DEFAULT_ANGLE_MAX,
+                    help="飞行方向容差(度)")
     args = ap.parse_args(argv)
 
     did = False

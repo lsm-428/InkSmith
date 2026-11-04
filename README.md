@@ -13,12 +13,16 @@
 ```
 ML/
 ├── PROJECT_RECORD.md      # 单一事实来源：全部结论、勘误、实测数据
+├── QUICKSTART.md          # 操作手册：四步循环（设计→扫描→排序→推荐）+ 命令速查
 ├── requirements.txt       # 运行依赖
 ├── inkjet_ml/             # 主包
 │   ├── dataset.py         # 读取 ADA 落盘的 Results.csv / Measurement.xml
 │   ├── headml.py          # 5 个模型 + 分组交叉验证（三套喷头共用，可横向比较）
 │   ├── ada.py             # 生成 ADA 扫描配方（扫哪些参数、填什么范围）
 │   ├── ada_rank.py        # 读回扫描结果，按 DropQCS 判据给波形组合排序
+│   ├── ncalc.py           # NCalc 表达式求值器（纯 Python，AST 白名单）
+│   ├── dropqcs.py         # DropQCS 规则集执行器（孔级 + 整头 + [Result] 链式）
+│   ├── dropqcs_vars.py    # 从 Results.csv 还原 20+ 官方 DropQCS 变量
 │   ├── inkprops.py        # 墨水物性：Z 数（Ohnesorge 倒数）计算与反解
 │   └── heads/             # samba.py / km512.py / km1024i.py 喷头专属模型
 ├── docs/evidence/         # 论文 PDF、Table 原始数据（.ods）、论文分享 PPT
@@ -36,12 +40,19 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 .venv/Scripts/python.exe -m inkjet_ml.ada --plan screen       # DOE 方案预览
 .venv/Scripts/python.exe -m inkjet_ml.ada --config screen     # 生成可照填的 recipe 片段
 
+.venv/Scripts/python.exe -m inkjet_ml.ada_rank "<落盘根>" --rules "<RulesConfig.xml>"
+                                                             # 用官方 DropQCS 规则判合格
 .venv/Scripts/python.exe -m inkjet_ml.heads.samba --recommend --target-speed 3.5
 .venv/Scripts/python.exe -m inkjet_ml.heads.samba --recommend --target-speed 3.5 --leave-nozzle-out
-.venv/Scripts/python.exe -m inkjet_ml.ada_rank "share/NOA89-test-05" --target-speed 3.5
-
+.venv/Scripts/python.exe -m inkjet_ml.heads.samba --recommend --data "<新落盘根>"
+                                                             # 把新扫的数据接进训练
 .venv/Scripts/python.exe -m inkjet_ml.inkprops --table1        # Z 数实现自检
+
+.venv/Scripts/python.exe -m unittest inkjet_ml.test_ncalc        # 规则求值器自检
+.venv/Scripts/python.exe -m unittest inkjet_ml.test_data_roots   # 数据接入链路自检
 ```
+
+完整操作流程见 [`ML/QUICKSTART.md`](ML/QUICKSTART.md)。
 
 ## 覆盖的喷头
 
@@ -67,6 +78,12 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
   ρ / η / γ 三个物性量 LP50 **测不到**，必须外部送检后当特征导入。
 - **每个延时点都是不同次发射的液滴**，不是同一滴的轨迹；延时越接近 0 越难被
   ADA 判为"液滴"，样本量小。
+- **DropQCS 判据用纯 Python 求值**（`ncalc.py` / `dropqcs.py`，零新依赖），
+  不用 .NET 的 `NCalc.dll`——后者只在 V4730 新基线机台上有，且要求装 .NET Runtime。
+  官方 8 套预置规则 + Default 全部可离线执行。
+- **「整头」= 一个测量场景**（一份 `Results.csv`）：官方相对判据里的
+  `[PrintheadSpeedAverage]` 只在本场景内汇总，**绝不跨组合池化**——
+  池化会让每个组合自比自，判据退化成"单组合内离散度"。
 
 ## 当前结论摘要
 
@@ -81,6 +98,9 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 
 **当前瓶颈是数据不是代码**：现有 108 孔是「成滴窗口切片」，卫星滴 0 例、
 波形只有 4 个点、电压与宽度共线。
+
+> **实测数据不入库**（机台本地资产，见 `.gitignore`）。复现需要自行采集，
+> 或用 `ML/explore/labels.csv` 里的同源标签表。
 
 ## 许可
 

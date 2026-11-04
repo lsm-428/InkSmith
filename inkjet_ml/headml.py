@@ -118,12 +118,25 @@ class HeadDataset:
 
 
 def make_cv(n: int, y: np.ndarray, groups: Optional[np.ndarray]):
-    """分组优先的交叉验证；组数不足时退化为分层 KFold，再不足用留一法。"""
+    """分组优先的交叉验证；组数不足时退化为分层 KFold，再不足用留一法。
+
+    ⚠️ **单组时绝不能用留一法**（2026-11-04 实测踩坑）：
+    机台上一次 ADA 扫描落盘就是一个 `Results.csv` = **1 个 session**，
+    若落到 `LeaveOneOut()`，1024 孔会变成 **1024 折 × 5 模型 = 5120 次训练**，
+    实测单是分类评估就超过 15 分钟（跑不完）。
+    故组数不足 3 时，一律走**分层 KFold**；连分层都不满足（某类不足 5 个）
+    才用留一法——此时样本量必然很小（<10），代价可接受。
+    """
     if groups is not None and len(set(groups.tolist())) >= 3:
         return GroupKFold(n_splits=min(5, len(set(groups.tolist())))), True
     _, counts = np.unique(y, return_counts=True)
     if n >= 2 * 5 and counts.min() >= 5:
         return StratifiedKFold(n_splits=5, shuffle=True,
+                               random_state=RANDOM_STATE), False
+    if n >= 2 * 5:
+        # 少数类不足 5 个 → 退化成分层 KFold 的变体：按类数决定折数
+        k = int(min(5, max(2, counts.min())))
+        return StratifiedKFold(n_splits=k, shuffle=True,
                                random_state=RANDOM_STATE), False
     return LeaveOneOut(), False
 

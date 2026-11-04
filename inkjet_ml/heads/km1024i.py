@@ -44,7 +44,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from ..dataset import Measurement, by_head, load_all
+from ..dataset import Measurement, by_head, load_all, resolve_roots
 from ..headml import (CLS_KEYS, MODEL_ORDER, REG_KEYS, HeadDataset,
                       best_by, evaluate_classification, evaluate_regression,
                       _fmt_table, save_json)
@@ -52,19 +52,36 @@ from ..headml import (CLS_KEYS, MODEL_ORDER, REG_KEYS, HeadDataset,
 HEAD_NAME = "KM1024i"
 HEAD_TYPE = "80"
 
-N_PULSE, N_SECTION = 7, 15          # 4.7.3：7 个 pulse × 15 段
+N_PULSE, N_SECTION = 7, 15          # 4.7.3 流程定义的上限：7 个 pulse × 15 段
+#: **实际用到的段数下限**（真实波形只点亮前几段）。
+#: 2026-11-04 实测 V4730 真实落盘 `ADA KM1024i 045`：
+#: 只有 `Section0/1/2` 三段（5.4 / 10.8 / 10.8 µs），其余段未点亮。
+#: 故判定"数据有效"不能要求凑满 15 段，否则真实数据一条都算不上。
+MIN_SECTIONS = 2
 
 #: 基础特征（两版都有）
 BASE_KEYS = ["width", "voltage_adjust_left", "voltage_adjust_right",
              "driver_power_voltage_adjust_low", "driver_power_voltage_adjust_high"]
 
-#: 分段宽度在 Measurement.xml / Results.csv 里的键名候选
+#: 分段宽度在 Measurement.xml 里的键名候选（**顺序 = 优先级**，取第一个命中的）。
+#:
+#: ⚠️ 2026-11-04 实测 V4730 真实落盘（`ScreenCaptures\ADA KM1024i 045\Measurement.xml`）
+#: 用的是 **`KM1024iPulse0Section0Width`**（无 "Waveform" 字样），
+#: 故把它排在首位——否则真实数据一条都匹配不上（`build()` 返回 None）。
 SECTION_KEY_TMPL = [
+    "KM1024iPulse{p}Section{s}Width",
     "KM1024iWaveformPulse{p}Section{s}Width",
     "WaveformPulse{p}Section{s}Width",
     "Pulse{p}Section{s}Width",
     "KM1024i.Pulse{p}.Section{s}.Width",
 ]
+
+#: 分段宽度在 **Results.csv 尾部** 的键名格式（另一套命名，实测存在）。
+#: 形如 `Width Pulse Section 1.1 (0)` / `Width Pulse Section 1.3 (0)`：
+#: `1.x` = 第 x+1 个 pulse 的第 1 段（1-based），`(0)` = 通道号。
+CSV_SECTION_KEY_TMPL = "Width Pulse Section {p}.{s} ({ch})"
+#: CSV 尾部键名里的通道号（KM1024i 左/右 bank 各一套参数，(0) 是常见值）
+CSV_SECTION_CHANNELS = ["0", "1"]
 
 #: 聚合特征顺序（固定）
 AGG_FEATURES = ["w_mean", "w_std", "w_min", "w_max",
@@ -81,19 +98,36 @@ def _f(x):
 
 
 def collect_sections(m: Measurement) -> Optional[np.ndarray]:
-    """从一次测量里取出 [n_pulse, n_section] 的分段宽度矩阵。"""
+    """从一次测量里取出 [n_pulse, n_section] 的分段宽度矩阵。
+
+    两套键名都试（**实测真实落盘两套并存**）：
+      1. `Measurement.xml` 标签：`KM1024iPulse0Section0Width`
+      2. `Results.csv` 尾部：`Width Pulse Section 1.1 (0)`（1-based 脉冲号）
+
+    ⚠️ 有效判定用 `MIN_SECTIONS`（实测真实波形只点亮 3 段，不是 15 段），
+    但**段数不足时其余段留 NaN** —— `aggregate()` 按 NaN 忽略计算，
+    这样特征维度恒定（可横向比较），又不因段数少而丢数据。
+    """
     s = m.settings
     mat = np.full((N_PULSE, N_SECTION), np.nan)
     hit = 0
     for p in range(N_PULSE):
         for si in range(N_SECTION):
-            for tmpl in SECTION_KEY_TMPL:
+            v = None
+            for tmpl in SECTION_KEY_TMPL:                 # ① Measurement.xml
                 v = _f(s.get(tmpl.format(p=p, s=si)))
                 if v is not None:
-                    mat[p, si] = v
-                    hit += 1
                     break
-    return mat if hit >= N_SECTION else None       # 至少要有 15 个段才算有效
+            if v is None:                                  # ② CSV 尾部
+                for ch in CSV_SECTION_CHANNELS:
+                    v = _f(s.get(CSV_SECTION_KEY_TMPL.format(
+                        p=p + 1, s=si + 1, ch=ch)))
+                    if v is not None:
+                        break
+            if v is not None:
+                mat[p, si] = v
+                hit += 1
+    return mat if hit >= MIN_SECTIONS else None
 
 
 def aggregate(mat: np.ndarray) -> List[float]:
@@ -146,8 +180,11 @@ def legacy_features(m: Measurement) -> Optional[List[float]]:
     return out
 
 
-def build(measurements: Optional[List[Measurement]] = None) -> Optional[HeadDataset]:
-    ms = by_head(measurements if measurements is not None else load_all(), HEAD_NAME)
+def build(measurements: Optional[List[Measurement]] = None,
+          roots: Optional[List[str]] = None) -> Optional[HeadDataset]:
+    """`roots` 指定要扫描的数据根（`None` = 用 `dataset.DEFAULT_ROOTS`）。"""
+    ms = by_head(measurements if measurements is not None
+                 else load_all(roots), HEAD_NAME)
     X, yc, yv, g, meta = [], [], [], [], []
     for m in ms:
         mat = collect_sections(m)
@@ -211,10 +248,21 @@ def selftest() -> bool:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="KM1024i ML")
     ap.add_argument("--out", default=os.path.join("results", "km1024i"))
+    ap.add_argument("--data", action="append", metavar="ROOT", default=[],
+                    help="追加的数据根目录（可重复）。指向机台上新扫的 ADA 落盘根；"
+                         "默认与既有数据合并训练，加 --replace-data 则只用这里指定的")
+    ap.add_argument("--replace-data", action="store_true",
+                    help="丢弃默认数据源，只用 --data 指定的根")
     args = ap.parse_args(argv)
 
+    roots = resolve_roots(args.data, replace=args.replace_data)
+    missing = [r for r in roots if not os.path.isdir(r)]
+    if missing:
+        print("⚠️ 以下数据根不存在，已跳过：%s" % ", ".join(missing))
+    print("数据根：%s" % (" | ".join(roots)))
+
     print("# KM1024i 一套 ML（HeadType 80）")
-    ds = build()
+    ds = build(roots=roots)
     if ds is None:
         print("本机暂无 KM1024i 实测数据。")
         print("交付内容：可训练管线 + 105 维分段宽度的聚合特征设计。\n")

@@ -28,6 +28,8 @@
 --------
     <根目录>\\**\\Results.csv      逐孔读数（含喷头元信息与波形快照）
     <根目录>\\**\\Measurement.xml  该次测量的真实设定值（最可靠）
+
+    扫描根见 `DEFAULT_ROOTS`。
 """
 
 from __future__ import annotations
@@ -47,7 +49,23 @@ HEADTYPE2NAME = {
     "4": "OCE CP (CanonC29)", "5": "Trident",
 }
 
-DEFAULT_ROOTS = [r"C:\LP50\ScreenCaptures", r"D:\Gitee\LP50\AutoADA\share"]
+#: 实测数据根目录。**只放本项目认可的资产**——
+#: `ML\share`（DMC Samba 108 孔 / 9 会话，§4.1）。
+#: 旧机台 `C:\LP50\ScreenCaptures` 的 768 组已从本项目的记录中移除：
+#: 那批是 Spectra S-class（HeadType 2）数据，与本项目的三个喷头（1117/3/80）无关，
+#: 且其 28 例卫星滴不属于 Samba 口径（§4.1 的 Samba 卫星滴仍为 0 例）。
+#: 磁盘上的原始文件保持原样，不在本模块的扫描范围内。
+#:
+#: ⚠️ **实测数据不入库**（`.gitignore` 排除 `ML/share/`），故这里是**候选列表**：
+#: ① 本机绝对路径；② 仓库内相对路径（`inkjet_ml/` 的上一级）。
+#: `load_all()` 会遍历**所有存在**的候选——两者指向同一份数据时不会重复加载
+#: （同一文件只会被 walk 一次，因路径不同故按 root 分别计入，见 `load_all` 的 multi 判定）。
+#: 都找不到时训练报"样本不足"，这是预期：**实测数据必须自行采集**。
+DEFAULT_ROOTS = [
+    r"D:\Gitee\LP50\ML\share",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 "share"),
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -214,7 +232,7 @@ def load_measurement(folder: str, root: str) -> Optional[Measurement]:
         "ink_pressure": _setting(mm, "InkPressure"),
         "led_delay": _setting(mm, "LEDDelay"),
         "voltage_supply": _setting(mm, "VoltageSupply", "High voltage B"),
-        "slewrate": _setting(mm, "Slewrate"),
+        "slewrate": _setting(mm, "PulseSlewRate", "Slewrate"),
         "pulse0_voltage": _setting(mm, "Pulse0Voltage", "High voltage A"),
         "pulse0_width": _setting(mm, "Pulse0Width"),
         "pulse0_tail": _setting(mm, "Pulse0Tail"),
@@ -240,6 +258,24 @@ def load_measurement(folder: str, root: str) -> Optional[Measurement]:
             if k == "head_temperature":
                 s[k] = nozzles[0].head_temp
 
+    # ---- 保留**全部**原始键（Measurement.xml 标签 + CSV 尾部条目）----
+    # 各 head 的特征键名五花八门（KM1024i 是 `KM1024iPulse0Section0Width`
+    # 这种分段宽度、Spectra 是 `SpectraRising`…），
+    # 若只保留上面 14 个固定键，各 head 模块就取不到自己的参数
+    # （表现为 `build()` 返回 None / 数据被静默跳过）。
+    # 这里把原始键**原样**并入 settings（数值化，保留原标签名），
+    # 固定键在上层仍可覆盖同名项。
+    for k, v in list(mm.items()):
+        if k not in s:
+            fv = _f(v)
+            if fv is not None:
+                s[k] = fv
+    for k, v in list(meta.items()):
+        if k not in s:
+            fv = _f(v)
+            if fv is not None:
+                s[k] = fv
+
     return Measurement(
         folder=folder, head_type=ht,
         head_name=HEADTYPE2NAME.get(ht, meta.get("Headtype", "?")),
@@ -249,16 +285,52 @@ def load_measurement(folder: str, root: str) -> Optional[Measurement]:
 
 
 def load_all(roots: Optional[List[str]] = None) -> List[Measurement]:
-    """遍历所有含 Results.csv 的测量目录。"""
+    """遍历所有含 Results.csv 的测量目录。
+
+    `roots` 省略时用 `DEFAULT_ROOTS`；给了就**只**用这些根（不合并默认值）。
+
+    ⚠️ **多根时的 session 名冲突**：session = 测量目录相对 root 的路径。
+    两个根下若有同名目录（如两个 root 各有一个 `NOA89-test-01`），
+    session 会撞名 → 分组交叉验证会把**不同来源的数据当成同一组**，
+    导致交叉验证分组泄漏、指标虚高。
+    故多根时给 session 加**根目录名前缀**（`_root_tag`），保证全局唯一。
+
+    ⚠️ **同一目录被多个根覆盖时不得重复计入**：`DEFAULT_ROOTS` 里
+    「本机绝对路径」与「仓库相对路径」在开发机上指向**同一份数据**，
+    若按 root 分别 walk，108 孔会被算成 216 孔（样本翻倍、指标失真）。
+    故按**规范化绝对路径**去重根，并记录已加载的目录。
+    """
+    use = list(roots) if roots else list(DEFAULT_ROOTS)
+    # 根去重（规范化绝对路径）：绝对路径与相对路径指向同一目录时只留一个
+    seen_roots = set()
+    uniq_roots = []
+    for r in use:
+        key = os.path.normcase(os.path.abspath(r))
+        if key in seen_roots:
+            continue
+        seen_roots.add(key)
+        uniq_roots.append(r)
+    use = uniq_roots
+
+    multi = len([r for r in use if os.path.isdir(r)]) > 1
     out: List[Measurement] = []
-    for root in (roots or DEFAULT_ROOTS):
+    loaded_dirs = set()          # 已计入的测量目录（绝对路径），防重复
+    for root in use:
         if not os.path.isdir(root):
             continue
+        tag = os.path.basename(os.path.normpath(root))
         for dp, dn, fns in os.walk(root):
-            if "Results.csv" in fns and any(f.startswith("noz") for f in fns):
-                m = load_measurement(dp, root)
-                if m and m.n:
-                    out.append(m)
+            if "Results.csv" not in fns or not any(f.startswith("noz") for f in fns):
+                continue
+            dkey = os.path.normcase(os.path.abspath(dp))
+            if dkey in loaded_dirs:
+                continue
+            loaded_dirs.add(dkey)
+            m = load_measurement(dp, root)
+            if m and m.n:
+                if multi:
+                    m.session = "%s/%s" % (tag, m.session.replace(os.sep, "/"))
+                out.append(m)
     return out
 
 
@@ -266,6 +338,43 @@ def by_head(measurements: List[Measurement], head: str) -> List[Measurement]:
     """筛出某个喷头的测量（head 传名字或 HeadType）。"""
     return [m for m in measurements
             if m.head_name == head or m.head_type == str(head)]
+
+
+def resolve_roots(extra: Optional[List[str]] = None,
+                  replace: bool = False) -> List[str]:
+    """把 CLI 的 `--data` 参数解析成最终要扫描的数据根列表。
+
+    - 不给 `--data` → 用 `DEFAULT_ROOTS`（本项目默认认可的资产）。
+    - 给了 `--data` → **默认与 `DEFAULT_ROOTS` 合并**（新扫的数据与既有数据一起训练）。
+    - `--replace-data` → 只用 `--data` 指定的根，丢弃 `DEFAULT_ROOTS`
+      （用于"只看新数据"或"旧数据工作点不同、不能混"的场景）。
+
+    合并时做**路径去重**（同一目录被指两次不会重复加载），
+    并保持顺序稳定（默认根在前，新增根在后），使输出可复现。
+
+    ⚠️ 去重按**规范化绝对路径**判定：`DEFAULT_ROOTS` 里「本机绝对路径」与
+    「仓库相对路径」在开发机上指向同一份数据，只按 `normpath` 去重会漏判
+    （绝对 vs 相对仍算不同），导致同一批数据被计入两次。
+    """
+    extra = [r for r in (extra or []) if r]
+    if not extra:
+        return _dedup_roots(DEFAULT_ROOTS)
+    if replace:
+        return _dedup_roots(extra)
+    return _dedup_roots(list(DEFAULT_ROOTS) + list(extra))
+
+
+def _dedup_roots(roots: List[str]) -> List[str]:
+    """按规范化绝对路径去重，保持首次出现的顺序。"""
+    seen = set()
+    out = []
+    for r in roots:
+        key = os.path.normcase(os.path.abspath(r))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
 
 
 def summary(measurements: List[Measurement]) -> None:

@@ -5,9 +5,7 @@
 >
 > **佐证（论文 PDF / 原始表格）存放在 [`docs/evidence/`](docs/evidence/README.md)**，
 > 索引里记录了每份依据支撑本文件哪一节结论。改结论先看依据，改依据先回这里。
->
-> **平台官方文档（ADA / DropQCS 说明书）索引见 [`docs/README.md`](docs/README.md)**，
-> §8.5 / §8.6 的机制结论已与官方文档逐条核对（见 §8.5.8）。
+> **平台官方文档（ADA / DropQCS 说明书）索引见 [`docs/README.md`](docs/README.md)**。
 
 ---
 
@@ -30,11 +28,9 @@ LP50（SUSS PiXDRO / MicroTec）安装于 `C:\LP50`。
 | 组成 | 路径 | 作用 |
 |---|---|---|
 | **ADA 模块** | `C:\LP50\Recipes\95 ADA` | **核心**：参数自动扫描 + 落滴自动测量 |
-| ADA-APA | `C:\LP50\Recipes\95 ADA-APA` | Advanced Drop **Print** Analysis（喷印后分析） |
 | DropQCS | `C:\LP50\Recipes\96 DropQCS` | 落滴质检 |
-| 打印头库 | `C:\LP50\HeadAssy` | DMC Samba(1117) / KM1024i / KM204 / KM512 / Spectra S-class |
+| 打印头库 | `C:\LP50\HeadAssy` | DMC Samba(1117) / KM1024i / KM204 / KM512 |
 | 分析工具 | `C:\LP50\Tools\DropAnalysis\Viewer` | ADA - Export / ADA - Status |
-| 屏幕截图 | `C:\LP50\ScreenCaptures` | ADA 图像落盘位置 |
 
 ---
 
@@ -49,7 +45,7 @@ LP50（SUSS PiXDRO / MicroTec）安装于 `C:\LP50`。
 
 | # | 维度 | 论文 | 本项目（LP50） | 由此可回答的新问题 |
 |---|---|---|---|---|
-| 1 | **多喷嘴并行** | 单个 MicroFab 喷嘴 | LP50 平台多喷嘴并行（物理孔数：Samba **12** / KM512 **512** / KM1024i **1024** / Spectra S-class **128**）；喷嘴间差异本身成为可学习对象 | 优化出的波形能否**迁移到整头**？能否**预测/补偿喷嘴间不一致**？ |
+| 1 | **多喷嘴并行** | 单个 MicroFab 喷嘴 | LP50 平台多喷嘴并行（物理孔数：Samba **12** / KM512 **512** / KM1024i **1024** ）；喷嘴间差异本身成为可学习对象 | 优化出的波形能否**迁移到整头**？能否**预测/补偿喷嘴间不一致**？ |
 | 2 | **全自动波形扫描** | 手工逐个试 | ADA 全自动、边际成本近零；支持多脉冲 / 双极性 | 多维波形空间的**最优解结构**；论文只有单梯形波 |
 
 **核心贡献主张（待实验证明）：**
@@ -112,7 +108,6 @@ LP50（SUSS PiXDRO / MicroTec）安装于 `C:\LP50`。
 ## 3. 自动输出（标签来源）
 
 `Advanced-Drop-Analysis.cs` 直接写出 CSV，表头为：
-
 ```
 Filename; Date; Ink Pressure; Head temperature; High voltage A; High voltage B;
 <所有被扫描的参数名 自动填入>;
@@ -138,9 +133,9 @@ Speed; Volume; Angle; X center; Y center; X left; Y top; X right; Y bottom;  ×5
 
 | 位置 | 内容 | 数量 |
 |---|---|---|
-| `D:\Gitee\LP50\AutoADA\share` | NOA89-test-01..09，9 测试 × 12 喷嘴 | 108 |
+| `D:\Gitee\LP50\ML\share` | NOA89-test-01..09，9 测试 × 12 喷嘴 | 108 |
 
-- 图像：`noz*.png`，**656×492 RGB 单帧**（DMC Samba 108 张全部如此；库中另 6 张非 ADA 抓屏为 640×480 / 480×640，不计入数据集；
+- 图像：`noz*.png`，**656×492 RGB 单帧**（DMC Samba 108 张全部如此；
   液滴为灰底上小黑点：XML 标定换算后与图像匹配到的真实 blob 中位 **~18×18 px（≈275 px²，约占帧面积 0.085 %）**。
 - 标签：同名 `noz*.xml`（108 组全部成对，无缺配），结构为
   ```
@@ -186,9 +181,8 @@ Speed; Volume; Angle; X center; Y center; X left; Y top; X right; Y bottom;  ×5
 
 - 波形参数几乎不变：脉冲电压 `{34,38,40}`、脉宽 `{1.9,2.2}`、Slew 恒 40、Tail 恒 4.5、频率恒 1000。
 - 本质是**打印头/喷嘴一致性标定**，不是波形扫描实验 → 不能训练波形设计模型，但作为**真实速度锚点**与**图像数据集**有价值。
-- ⚠️ `Results.csv` 里记录的图像绝对路径指向 `C:\LP50\ScreenCaptures\ada-20260820\HSB-006-0001\noz*.png`，
-  **该目录在本机上不存在**（C:\LP50\ScreenCaptures 已随旧机台下线不可访问）；Results.csv 只作为
-  字段结构 / 数值示例保留，不能直接当图像数据用。
+
+  该路径不在本项目的数据来源内；Results.csv 只作为字段结构 / 数值示例保留，不能直接当图像数据用。
 
 ### 4.3 图像资产的用法（两条路线）
 
@@ -383,7 +377,8 @@ PulseEndRamp / PulseIdleAfter` 全是独立可扫维度。**Samba 是唯一做�
 | `heads/km512.py` | KM512 一套 ML（管线就绪，待实测数据） |
 | `heads/km1024i.py` | KM1024i 一套 ML（105 维分段宽度已聚合降维，管线就绪） |
 | `ada.py` | 生成 ADA 扫描配方（扫哪些参数、填什么范围、得多少张图） |
-| `ada_rank.py` | 读回扫描结果，按 DropQCS 判据给波形组合排序 |
+| `ada_rank.py` | 读回扫描结果，按 DropQCS 判据给波形组合排序（**离线只读**，不产生机台动作；判据默认值与 `ada.py --rules` 同源；`--rules` 可直接执行官方规则集，见 §8.5.10） |
+| `ncalc.py` / `dropqcs.py` / `dropqcs_vars.py` | DropQCS 规则求值器（纯 Python，无 .NET 依赖）+ 规则集执行器 + 官方变量还原，见 §8.5.10 |
 
 论文复现那套（`data.py` / `models.py` / `optimizer.py` / `synthetic.py` / `run.py` /
 `inkjet_data.csv`）已于 2026-10-13 删除：其结论已固化到本文档，框架能力由
@@ -396,7 +391,7 @@ PulseEndRamp / PulseIdleAfter` 全是独立可扫维度。**Samba 是唯一做�
 **三个正交维度**（本项目的数据设计核心）
 - **墨水**：覆盖不同 Z 的生产墨水（每种另测 ρ/η/γ）
 - **波形**：ADA 扫描（电压 / 宽度 / 拖尾 / 边沿 / 多脉冲）
-- **喷嘴**：全头并行（物理孔数见 §8.6.8.1：Samba **12** / KM512 **512** / KM1024i **1024** / Spectra S-class **128**）
+- **喷嘴**：全头并行（物理孔数见 §8.6.8.1：Samba **12** / KM512 **512** / KM1024i **1024** ）
 
 **分阶段推进**
 1. 单墨水 × 多波形 × 全头 → 跑通 pipeline，出与论文 baseline 的对照；
@@ -546,22 +541,11 @@ ADA 默认区间是为"看全程边界"设计的**极密网格**：
 | `99 APO` 流程 | 含 `APO Fujifilm DMCSamba.recipe.xml` |
 | `NCalc.dll`（表达式引擎） | 有 |
 
-证据：`C:\LP50\Recipes\95 ADA-APA\apa_measure.cs:24-26` 逐字记载
-"DropQCSJob / AutomatedPrintOptimizationJob classes exist in none of the 438 assemblies under C:\LP50"。
-**结论：DropQCS 判据只在 V4730 那套安装上跑得起来**——这也正是本项目把参数基线
-切到 V4730 的原因（基线见 §8.7）。
-### 8.5.5 为什么 APO 不参与
-
-
-
-
-APO（`99 Automated-Print-Optimization`）是**打印规划**流程：把 `Recipe.APO.Bitmap`
-打到衬底上，靠人眼评图（线宽、速度、DPI 的 GIF），**没有任何自动判据，
-视觉结果也无法一次读取进程序**。所以它不能进自动寻优回路。
-
-它唯一的参考价值：`Automated-Print-Optimization-DMCSamba.xml` 里 SUSS 对同样这些脉冲参数
-用的是**更窄的默认区间**（Pulse 宽 `1.4:0.2:4`=14 水平 而非 `1:0.1:4`=31 水平），
-说明"14 个水平左右足够刻画波形响应"——这是**刻度结论**，与 APO 流程本身无关。
+证据（2026-11-04 直接扫程序集，不依赖任何二手转述）：
+- 旧机台 `C:\LP50` 的 **317 个 DLL 全量扫描** → `DropQCSJob` / `RulesEngine` **均无命中**；
+- 新基线 `…\LP50 V4730…` 的 **183 个 DLL** → `DropQCSJob` 命中
+  `Release\ScriptSupport.dll` 与 `Tools\EncryptionX64\ScriptSupport.dll`；
+  `RulesEngine` 命中 `Release\Script.dll` / `Release\ScriptSupport.dll`（及 `Tools\EncryptionX64\` 同名两份）。
 
 ### 8.5.6 配套工具（闭环两半）
 
@@ -584,14 +568,28 @@ python -m inkjet_ml.ada --rules          # 输出 DropQCS 判据文件
 `inkjet_ml/ada_rank.py` —— **判**（读回结果，按同一判据给波形组合排序）：
 
 ```powershell
-python -m inkjet_ml.ada_rank "C:\LP50\ScreenCaptures\Measurement 1"
-python -m inkjet_ml.ada_rank <扫描目录> --target-speed 4 --top 20 --csv 排序表.csv
+python -m inkjet_ml.ada_rank "<扫描落盘根目录>"
+python -m inkjet_ml.ada_rank <扫描目录> --target-speed 3.5 --top 20 --csv 排序表.csv
 ```
 
 它把落盘的目录树按 `FolderPrefix` 还原成「每个波形组合一行」，逐孔统计
 不喷 / 单滴 / 卫星，并按 `合格率 → 速度贴近目标 → 卫星最少` 排序。
 **这一环是必需的**：DropQCS 的规则引擎是对单次测量（一套固定波形）判合格与否，
 它不知道"哪个波形组合更好"，组合优劣必须另行聚合计算。
+
+> **`ada_rank.py` 不是 DropQCS 的复刻**（2026-11-04 逐项核实 `Rules\*.RulesConfig.xml`）：
+>
+> | | DropQCS 规则引擎 | `ada_rank.py` |
+> |---|---|---|
+> | 判据 | NCalc 表达式，**可编程** | 默认**硬编码三条**；`--rules` 后**可执行官方规则集**（见 §8.5.10） |
+> | 动作 | **会真的动作**：Reject 停用孔 / Stop 停机 / Purge·Wipe·Suction·AdvanceCloth·Jet | **不产生任何动作**，只出排序表 |
+> | 整头层 | 有 `HeadsRule`（`[NrRejectedNozzles] > [NrNozzles]/2` → 停机报警） | 默认无；`--rules` 后**有**（离线复现，不执行动作） |
+> | 范围 | 单次测量（固定波形） | **跨波形组合寻优**（一次扫描几百个组合） |
+>
+> 即：**测量层两者重叠，判定层分工**。DropQCS 是产线质检闸门（"这个波形够不够好、
+> 多少孔可用"），`ada_rank.py` 是研发工具（"哪个波形组合最优"）。
+> 判据**默认值同源**（共用 `ada.DEFAULT_*`）；`--rules` 路径已能执行官方规则，
+> 但**动作层仍然无法替代**——停用孔、停机、维护动作只有机台上的 DropQCSJob 会做。
 
 ### 8.5.6.1 真实解析的结果（Samba 流程）
 
@@ -615,12 +613,14 @@ python -m inkjet_ml.ada_rank <扫描目录> --target-speed 4 --top 20 --csv 排�
 带 `--recipe` 时正确显示配方覆盖（`Nozzle` → `1:12`、`HeadTemperature` → `25:2.5:50`）。
 \* `HeadTemperature` 的 UpdateSpeed 取自通用 `Parameters.xml`（=8），喷头专用文件未定义。
 
-⚠️ **目标速度必须按实测标定，不能用默认值**。现有真实数据的速度分布是
+⚠️ **目标速度必须按实测标定，不能想当然**。现有真实数据的速度分布是
 **1.13–6.99 m/s**（share 会话均值 2.8–4.7），
-所以 `--target-speed` 默认给的 5.0 会让合格率普遍为 0。
+所以取 5.0 m/s 会让合格率普遍为 0 —— 这就是默认值定为 **3.5** 的原因。
 实测用法：`--target-speed 3.5` 时 share 的 NOA89-test-05/06/07/08 四个会话
 合格率均为 100%，`--target-speed 4.5` 时 test-01 为 91.7%。
 **目标速度是按墨水 × 按工艺定的量，必须在每次换墨后用 ADA 实测重新确定。**
+（默认值现由 `ada.DEFAULT_TARGET_SPEED` 等常量统一管理，`--rules` 与 `ada_rank` 共用，
+见 §8.5.6 的分工说明与 §8.5.9 的同源说明。）
 
 ### 8.5.8 官方文档核对结果（2026-10-13 新增，见 [`docs/README.md`](docs/README.md)）
 
@@ -653,8 +653,14 @@ python -m inkjet_ml.ada_rank <扫描目录> --target-speed 4 --top 20 --csv 排�
 （XML 内 `<` `>` `&` 须转义为 `&lt;` `&gt;` `&amp;`。）
 
 **顺带印证一条默认值**：`AverageSpeedWithinMargin` 预置规则用**±20%** 作为速度容差，
-与 `ada_rank.py` 的 `--margin 0.20` 默认值一致——但语义不同：
+与 `ada_rank.py` 的 `--speed-margin 0.20` 默认值一致——但语义不同：
 官方基准是**整头实测均值**，`ada_rank` 是**人工指定目标值**。
+
+> **2026-11-04 起两侧默认值同源**：原先 `ada.py --rules` 与 `ada_rank.py` 各自写死默认，
+> 且**实际不一致**（前者 3.5 → 2.8–4.2，后者 5.0 → 4.0–6.0）——同一批数据在机台规则与
+> 离线排序下会得出不同结论。现改为共用 `ada.py` 的 `DEFAULT_TARGET_SPEED` /
+> `DEFAULT_SPEED_MARGIN` / `DEFAULT_ANGLE_MAX` 与 `speed_band()` 函数，
+> **默认值只在一处定义**，改一处即两侧同步。
 
 ### 8.5.9 官方预置的 8 套 DropQCS 规则（本项目直接可用）
 
@@ -675,6 +681,75 @@ python -m inkjet_ml.ada_rank <扫描目录> --target-speed 4 --top 20 --csv 排�
 `Droplet Search Window`（规则只分析此切片内的孔，可排除图像边缘假液滴）、
 `Camera Edge Exclusion`、`Focus Depth Camera`（可同时分析多个喷嘴 bank）、
 `Jetting Block Width`（每次同喷的孔数，**越大测得越快**——§7「耗时」的真实调节旋钮）。
+
+### 8.5.10 规则求值器（纯 Python，2026-11-04 新增）
+
+§8.5.9 那 8 套官方规则**现在可以在本项目里直接执行**（离线，只读，不产生机台动作）。
+
+**为什么不用真的 `NCalc.dll`**：`NCalc.dll` 是 **.NET 库**（V4730 的 `Release\NCalc.dll`，
+190 KB），**只在 V4730 那台机台上有**（旧机台没有）；用 pythonnet 调它需要本机装
+.NET Runtime —— 而本机既无 pythonnet 也无 .NET Runtime。依赖链会从"纯 Python"
+变成"需要 .NET"，换机/装环境都踩坑。
+
+**但没必要**：实测官方 8 套规则 + Default 用到的**全部 13 条表达式**，语法面只是一个
+小子集 —— 变量 `[Xxx]` / 比较 `== != < >` / 逻辑 `and or &&` / 算术 `* / -` / 括号 /
+常量，**无字符串操作、无正则、无集合运算**；官方 18 个内置函数全是纯数学函数。
+用 Python 的 `ast` 解析 + 白名单求值即可覆盖，**零新依赖**（`ast` + `math` 都是标准库）。
+
+| 新模块 | 职责 |
+|---|---|
+| `inkjet_ml/ncalc.py` | 表达式求值器：NCalc 语法 → Python（`[Xxx]`→标识符、`&&`→`and`、`true/false`→`True/False`），18 个内置函数，**AST 白名单**（只允许字面量/名字/算术比较逻辑/白名单函数调用；属性访问、lambda、下标、导入等一律拒绝） |
+| `inkjet_ml/dropqcs.py` | 规则集执行器：`NozzlesRule`（逐孔）+ `HeadsRule`（整头）+ `[Result]` 链式状态机；**只记录动作，不执行**（停用孔/停机/维护是机台 DropQCSJob 的事） |
+| `inkjet_ml/dropqcs_vars.py` | 从 `Results.csv` 还原官方变量：`[Present]` `[NrDroplets]` `[SpeedAverage/Min/Max]` `[AngleAverage/Min/Max]` `[VolumeTotal/Min/Max]` `[X/YCenter*]` `[XMin][XMax][YMin][YMax]` 等 |
+
+**用法**（`ada_rank.py` 新增 `--rules`）：
+
+```powershell
+python -m inkjet_ml.ada_rank "<扫描落盘根目录>" --rules "…\Rules\Examples\SingleDroplet.RulesConfig.xml"
+```
+
+不给 `--rules` 时仍走原来的三条硬编码判据（两条路径并存，原路径行为不变）。
+
+**四个必须知道的实现要点**：
+
+1. **"整头"的作用域 = 一个测量场景（一份 `Results.csv`）**（2026-11-04 明确的口径）：
+   官方机台上"整头"= 一次测量里的**整个喷头**；本项目做的是**跨波形组合的离线排序**，
+   一个扫描目录下有**成百上千份 `Results.csv`**（每份 = 一个波形组合 = 一次测量）。
+   故整头级统计量（`[PrintheadSpeedAverage]` 等）**只在本场景内汇总，绝不跨 `Results.csv` 池化**。
+   例：`share` 下 9 个 `NOA89-test-*` = **9 个场景**，各有各的整头均值
+   （实测 4.20 / 2.74 / 3.69 / 3.81 / 3.94 / 3.83 / 3.03 / 3.19 / 2.50 m/s）。
+   ⚠️ 若跨场景池化，相对判据的参照系就变成"所有组合的池化均值"——既不对应机台上任何一次测量，
+   又会让**每个组合自比自**（自己减自己的均值），判据退化成"单组合内离散度"，
+   失去"该孔是否偏离本头平均水平"的语义。
+   **实测反例**（把 `test-01` 与 `test-03` 假想拼成一个池，用
+   `AverageSpeedWithinMargin` 判）：单独判时 `test-01` 拒 **1** 孔、`test-03` 拒 **0** 孔；
+   池化后（均值被 test-01 的 4 个 4.5–4.8 m/s 孔拉高到 3.94）两者合计拒 **7** 孔
+   —— `test-03` 的孔因均值偏移被误判。**不同波形混为一个池会实质改变判定结果。**
+   （注：在 share 全 9 场景上两种口径恰好同解——因为各场景内速度离散本就大于 ±20% 带，
+   带外孔在两种口径下都出带；这属于该数据集的巧合，不能当作口径无关的证据。）
+2. **执行顺序**：官方规则里**孔级规则也会引用整头级变量**
+   （`AverageSpeedWithinMargin` 就是 `[SpeedAverage] < ([PrintheadSpeedAverage]*0.8)`），
+   而整头统计量要**先由本场景所有孔汇总**才能得出 → 正确顺序是
+   **汇总整头 → 跑孔级规则 → 用孔级结果跑整头规则**（与机台一致）。顺序颠倒会失败。
+3. **`[SpeedAverage]` 是逐滴均值**，不是"第一个滴的速度"——多滴孔上两者不同
+   （实测 Canon N2N 孔 2：第 1 滴 12.01 m/s，但逐滴均值 8.61 m/s）。
+   原硬编码判据取的是第 1 滴，官方规则用的是均值——**这是两条路径的口径差异，
+   不是 bug**。
+4. **逐滴列**：CSV 里 `Speed/Volume/Angle/X center/Y center/X left/Y top/X right/Y bottom`
+   这 9 列**重复 5 组**，对应第 1..5 个液滴（实测多滴样本与 `noz*.xml` 逐字一致）；
+   0 滴孔的行**只有 10 列**（后续列直接省略，不是空串）→ 必须按"组"读，不能按固定下标。
+
+**验证**（`inkjet_ml/test_ncalc.py`，标准库 `unittest`，**15 个测试全过**）：
+官方 13 条表达式逐条对拍 ✅；18 个内置函数 ✅；注入防护
+（`__import__` / 属性访问 / lambda / 下标 全部拦下）✅；
+**8 套官方规则 × 4 个真实数据源的语义交叉验证 12/12 ✅**
+（`SingleDroplet` 恰好拒「0滴+多滴」、`AtLeastOneDroplet` 只拒「0滴」、
+`PerformMaintenance` 拒「0滴或多于 2 滴」，与规则语义手工推算值逐一吻合）；
+多滴变量构造（`VolumeTotal` = 各滴体积和、`SpeedAverage` = 逐滴均值）与 0 滴哨兵
+（速度为负、角度 −180）✅；
+**场景作用域 4 项 ✅**（9 个会话各有独立整头均值、池化值不等于任何场景值、
+相对判据确实与本场景均值比、**构造反例证明池化会改变判定结果**）——
+这 4 项专门防止有人把"整头"改成跨场景池化。
 
 ---
 
@@ -710,10 +785,6 @@ KM1024i 用的是"分段宽度"型参数。三套的特征交集为**空集**（
 > Samba 只有 12 孔，是三套里**最不利于**做孔级建模的（§8.6.6 的结论强度受限即源于此）；
 > KM512 512 孔 / KM1024i 1024 孔 在**孔间方差**上的可学习空间大得多，
 > 采数优先级应据此排序。
->
-> ⚠️ **Spectra SX3 已停产**：SX3（128 喷嘴）属 S-class PHA，但已停产，
-> 不应作为新项目的开发/验证目标；S-class 现有资产（SE / SM / SL，均 128 喷嘴）可继续使用。
-> `inkjet_ml/heads/` 也未实现 SpectraSClass 的 ML 管线（参数命名空间与 Samba/KM 系完全不同）。
 
 ⚠️ 当前计入本项目资产的真实数据**仅 DMC Samba 108 孔**，属于当前 3 种喷头；
 **KM512、KM1024i 仍是 0 实测数据**，所以后两套只能交付管线。
@@ -1054,6 +1125,8 @@ python -m inkjet_ml.ada --verify --head DMCSamba     # 交叉校验
     （机器 `IO.Ink.PressureSetpoint` 合法范围 -38…0，默认 -15）——这是**故意的**，
     真实工作点必须被包含，否则新数据与现有 108 孔不同工作点、无法合并。
   - ⬜ **仍待实机执行**：本条只交付了方案，尚未采到任何新数据。
+    （**数据接入的管道已就绪**：2026-11-04 新增 `--data <落盘根>`，
+    新扫的数据可直接进训练；见 §10 变更记录与 [`QUICKSTART.md`](QUICKSTART.md) §4。）
 - [x] **特征表加 nozzle 位置编码** —— §1.5 第 2 项创新点（喷嘴级一致性建模）已实现：
   `samba.py` 新增 `nozzle`（原始孔号）+ `nozzle_frac`（归一化位置）两个特征；
   `headml.py` 新增 `evaluate_leave_nozzle_out()`（按孔分组 CV）与 `HeadDataset.groups_nozzle`。
@@ -1076,9 +1149,25 @@ python -m inkjet_ml.ada --verify --head DMCSamba     # 交叉校验
   （实测下 NOA89-test-05/06/07/08 合格率均 100%），并在使用说明中标注必须按墨水重新标定。
 - [ ] **换用 V4730 安装**以启用 DropQCS 规则引擎（见 §8.5.4）。
 - [ ] **采集 KM512 / KM1024i 实测数据**：目前计入资产的 DMC Samba 108 组里没有这两个喷头，
-- [ ] **`ada_rank.py` 判据与官方预置规则对齐**：以 `SingleDroplet`（恰好 1 滴）和
-      `AverageSpeedWithinMargin`（整头均值 ±20%）为参照核对当前实现，
-      并考虑把 `[PrintheadSpeedStdDev]` 等整头一致性指标纳入排序（见 §8.5.8/§8.5.9）；
+- [x] **`ada_rank.py` 与 `ada.py --rules` 的判据默认值同源**（2026-11-04）——
+      原先两侧各写死且**不一致**（`--rules` 3.5 → 2.8–4.2，`ada_rank` 5.0 → 4.0–6.0），
+      同一批数据在机台规则与离线排序下结论会不同。现共用 `ada.DEFAULT_TARGET_SPEED` /
+      `DEFAULT_SPEED_MARGIN` / `DEFAULT_ANGLE_MAX` 与 `speed_band()`，默认值只在一处定义；
+      已交叉校验两侧速度带同为 2.80–4.20 m/s、逐组合 `pass_rate` 0 处不一致。
+      实测校验：新默认下 share 的 test-05/06/07/08 合格率 **100%**、test-01 **91.7%**
+      （与 `dropqcs_rules()` docstring 记载一致）。
+- [x] **`ada_rank.py` 判据与官方预置规则对齐（第一步已完成）** —— 新增**纯 Python 规则求值器**
+      （`ncalc.py` / `dropqcs.py` / `dropqcs_vars.py`，**零新依赖**，不用 .NET / NCalc.dll），
+      `ada_rank.py --rules <RulesConfig.xml>` 可直接执行**官方 8 套规则 + Default**，
+      含原先做不到的**相对判据 / `[Result]` 链式 / 双头判据 / 位置判据**（见 §8.5.10）。
+      已用 15 个 unittest 对拍：官方 13 条表达式逐条一致、8 套规则 × 4 数据源语义交叉验证 12/12、
+      场景作用域 4 项（含"池化会改变判定结果"的构造反例）。
+- [x] **`ada_rank.py` 跨组合场景的整头级语义**（2026-11-04 定案）—— **整头作用域 = 一个
+      测量场景（一份 `Results.csv`）**：`share` 下 9 个 `NOA89-test-*` = **9 个场景**，
+      整头统计量各自独立计算，**绝不跨场景池化**。
+      这样与机台语义一致（机台"整头"= 一次测量里的整个喷头），
+      且避免"每个组合自比自"使相对判据退化成单组合内离散度。已用 3 个 unittest 固化
+      （见 §8.5.10 实现要点 1）。
 - [x] **论证 Jetting number 下沉到规则引擎**：官方内置函数已能表达 Eq.5 全部运算，
       若成立则闭环判定可实时进行，无需 Python 侧往返（见 §8.5.8）。
 - [x] **补入「论文参数 vs LP50 可测性」A/B/C/D 四类对照（§5.1）** —— 逐项核到源码：
@@ -1180,3 +1269,135 @@ python -m inkjet_ml.ada --verify --head DMCSamba     # 交叉校验
     另经实机图像实测（`DropQCS1,2,3,4,5.png` 液柱宽度剖面 5–8 px = 10–16 µm，
     且**从喷口向下逐渐变宽**）确认：**图像液柱宽度不能代表喷孔直径**（喷孔直径应处处不变），
     故 **D 仍须向 FUJIFILM 索取**，不能用图像替代。
+- **2026-11-04** 清除项目内 `C:\LP50\ScreenCaptures` 的数据记录与文档表述（**磁盘原始数据不动**）：
+  - **判定依据**：那 768 组（6 会话 × 128 孔，2019 年）经 `Measurement.xml` 解析为
+    **Spectra S-class（HeadType 2）**，与本项目三个喷头（1117 / 3 / 80）**不同头**；
+    三个训练管线都经 `by_head()` 按头名过滤，故移除该数据源**不改变任何现有训练输出**
+    （Samba 仍 108 孔 / 9 会话，`results/samba` 全部指标不变）。
+  - **已清除的项目内记录**：`explore/images.json` 876 → **108** 条；
+    `explore/labels.csv` 876 → **108** 行（纯删除，无格式扰动）；
+    `explore/measurements.json` 15 → **9** 条；`explore/scan_layout.json` 只保留
+    `ML\share` 一个根；`inkjet_ml/dataset.py` 的 `DEFAULT_ROOTS` 去掉该根。
+    序列化风格（CRLF / `indent=1` / 不转义非 ASCII / BOM）逐文件往返一致。
+  - **已改的表述**：§1 平台表删去「屏幕截图」行；§4.1 删去"另 6 张非 ADA 抓屏"（那 6 张
+    DVCapt/PVCapt 正是该目录根下的文件）；§4.2 原写"该目录在本机上不存在"**与事实不符**
+    （实测 1649 个文件、207 MB 仍在）→ 改为"不在本项目的数据来源内"；
+    §5 与 `ada_rank.py` 的用法示例改用 `<扫描落盘根目录>` 占位。
+  - **保留的部分**：`DropAnalysis.BaseFolder` 的默认值 `C:\LP50\ScreenCaptures\` 是
+    **实机配置事实**（V4730 新基线的 flow XML 与 recipe 里默认值逐字相同），
+    `ada.py` 生成可照填 recipe 时依赖它与实机一致 → 不动；
+    `share\NOA89-test-*\Results.csv` 里记录的绝对路径是**机台落盘时写入的历史值**，
+    属原始产物而非项目表述 → 不动。
+
+
+    故按"与本项目无关"处理：**从文档中整体移除**，而非改路径。
+    旧机台 `C:\LP50` 的 **317 个 DLL 全量扫描** → `DropQCSJob` / `RulesEngine` **均无命中**；
+    新基线 **183 个 DLL** → `DropQCSJob` 命中 `Release\ScriptSupport.dll` 与
+    `Tools\EncryptionX64\ScriptSupport.dll`，`RulesEngine` 命中 `Release\Script.dll` /
+    `Release\ScriptSupport.dll`（及 `Tools\EncryptionX64\` 同名两份）。
+    结论不变：**DropQCS 判据只在 V4730 那套安装上跑得起来**（§8.7 切基线的理由）。
+    旧的"438 个程序集"数字随之删除——它转述自 APA 脚本，本次直接扫描的 317 是实测值。
+  - `ada.py` 证据段 C 的同一处引用同步改写；`--verify` 仍 **19/19 一致**。
+  - **同时厘清 `ada_rank.py` 与 DropQCS 的关系**（逐项核实 8 套官方规则样例后）：
+    `ada_rank.py` **不是** DropQCS 的复刻，而是它的**只读离线分析器**——
+    DropQCS 判据是 NCalc 可编程表达式（相对判据 / `[Result]` 链式 / 双头 / 位置判据）
+    且**会真的动作**（Reject 停用孔、Stop 停机、Purge·Wipe·Suction·AdvanceCloth·Jet）；
+    `ada_rank` 判据是**硬编码三条**、**不产生任何动作**，但能做 DropQCS 做不到的
+    **跨波形组合寻优**。即：**测量层重叠、判定层分工**。
+- **2026-11-04** 修正 `ada_rank.py` 的判据默认值与 `ada.py --rules` 不一致：
+  - **问题**：两侧各写死默认值且**实际不同** —— `--rules` 是 3.5 ±20% → **2.8–4.2 m/s**，
+    `ada_rank` 是 5.0 ±20% → **4.0–6.0 m/s**。同一批数据在机台规则与离线排序下
+    会得出**不同结论**（文档原写"判据逐条一致"不成立）。
+  - **改法**：在 `ada.py` 建立**单一事实来源** `DEFAULT_TARGET_SPEED=3.5` /
+    `DEFAULT_SPEED_MARGIN=0.20` / `DEFAULT_ANGLE_MAX=2.0` + `speed_band()` 函数，
+    `ada_rank.py` 直接 import 共用（无循环依赖）；CLI 默认值也改用这些常量。
+    **默认值此后只在一处定义**，改一处即两侧同步。
+  - **交叉校验**：从 `--rules` 生成的 XML 里正则抽出速度上下限，与 `ada_rank` 默认值比对
+    → 两侧同为 2.80–4.20 m/s；对 share 全部 9 个组合**独立复算**合格率（复刻 6 条
+    NozzlesRule 语义）→ 与模块 `pass_rate` **0 处不一致**。
+  - **实测印证**：新默认下 share 的 test-05/06/07/08 合格率 **100%**、test-01 **91.7%**，
+    与 `dropqcs_rules()` docstring 记载的实测结论**完全吻合**（原先 4.0–6.0 反而偏低）。
+  - 顺带修正文档：§8.5.9 "顺带印证一条默认值" 改为"两侧默认值同源"；
+    §8.5.6 补「`ada_rank.py` 不是 DropQCS 复刻」的分工对照表；
+    §8.5.7 那句"默认给的 5.0"改为"取 5.0 会…（这就是默认值定为 3.5 的原因）"；
+    §9 待办里"`ada_rank.py` 判据与官方预置规则对齐"拆为
+    「默认值同源（已完成）」+「相对/链式/双头/位置判据是否扩展（待决）」两项。
+- **2026-11-04** 新增**纯 Python DropQCS 规则求值器**（§8.5.10）——官方 8 套规则现在
+  可在项目内直接执行：
+  - **不用真的 `NCalc.dll`**：它是 .NET 库且**只在 V4730 新基线上**（旧机台没有），
+    pythonnet 还需本机装 .NET Runtime（本机两者皆无）→ 依赖链会从"纯 Python"变成"需要 .NET"。
+    但**没必要**：官方 13 条表达式的语法面只是小子集（变量/比较/逻辑/算术/括号/常量 +
+    18 个纯数学内置函数，无字符串、无正则、无集合运算）→ `ast` 白名单求值即可，**零新依赖**。
+  - **新增 3 个模块**：`ncalc.py`（表达式求值 + AST 白名单防注入）、
+    `dropqcs.py`（NozzlesRule/HeadsRule 两级 + `[Result]` 链式状态机，**只记录动作不执行**）、
+    `dropqcs_vars.py`（从 `Results.csv` 还原 20 余个官方变量）。
+    `ada_rank.py` 新增 `--rules <RulesConfig.xml>`；**不给则走原硬编码路径，行为不变**。
+  - **三个实现要点**（都是踩出来的）：① 执行顺序必须是
+    **汇总整头 → 孔级规则 → 整头规则**（官方 `AverageSpeedWithinMargin` 是**孔级规则却引用
+    整头变量** `[PrintheadSpeedAverage]`，顺序颠倒直接失败）；
+    ② `[SpeedAverage]` 是**逐滴均值**而非"第 1 滴速度"（多滴孔上不同：实测 12.01 vs 8.61 m/s），
+    与原硬编码判据的口径差异是**有意保留**的；③ CSV 里 9 列液滴数据**重复 5 组**对应 1..5 个液滴，
+    且 0 滴孔的行**只有 10 列**（后续列省略而非空串）→ 必须按"组"读不能按固定下标。
+  - **验证**：`inkjet_ml/test_ncalc.py`（标准库 `unittest`，**11 个测试全过**）——
+    官方 13 条表达式逐条对拍、18 个内置函数、注入防护（`__import__`/属性访问/lambda/下标
+    全部拦下）、**8 套规则 × 4 数据源语义交叉验证 12/12**（`SingleDroplet` 恰好拒
+    「0滴+多滴」、`AtLeastOneDroplet` 只拒「0滴」、`PerformMaintenance` 拒「0滴或多于 2 滴」，
+    与规则语义手工推算值逐一吻合）、多滴变量构造与 0 滴哨兵。
+  - **§9 待办**：原"判据与官方预置规则对齐"标记为**已完成**；新增一条待决——
+    **跨组合场景的整头级语义**：`[PrintheadSpeedAverage]` 在"一次测量一个均值"下清晰，
+    但本项目是"几百个波形组合各自排序"，此时"整头均值"指哪个组合并不明确，需先定口径。
+- **2026-11-04** 定案**"整头"作用域 = 一个测量场景（一份 `Results.csv`）**：
+  `share` 下 9 个 `NOA89-test-*` = **9 个场景**，整头统计量各自独立计算、
+  **绝不跨 `Results.csv` 池化**。实测 9 个场景的 `PrintheadSpeedAverage` 互不相同
+  （4.20 / 2.74 / 3.69 / 3.81 / 3.94 / 3.83 / 3.03 / 3.19 / 2.50 m/s），
+  池化值（3.42 m/s）不等于任何一个场景值。
+  **理由**：① 与机台语义一致（机台"整头"= 一次测量里的整个喷头）；
+  ② 若跨场景池化，相对判据的参照系变成"所有组合的池化均值"——既不对应机台上任何一次测量，
+  又会让**每个组合自比自**（自己减自己的均值），判据退化成"单组合内离散度"，
+  失去"该孔是否偏离本头平均水平"的语义。
+  **实测反例**（`test-01` + `test-03` 假想池，`AverageSpeedWithinMargin`）：
+  单独判 test-01 拒 **1** / test-03 拒 **0**；池化后合计拒 **7** 孔（均值被 test-01 的
+  4 个 4.5–4.8 m/s 孔拉高到 3.94，test-03 的孔被误判）→ **混池会实质改变判定结果**。
+  （在 share 全 9 场景上两种口径恰好同解，属该数据集巧合——各场景内离散本就大于 ±20% 带。）
+  已在 `dropqcs.head_statistics()` / `dropqcs.evaluate_ruleset()` / `ada_rank.evaluate_with_ruleset()`
+  三处**显式写入该契约**，并新增 **3 个 unittest 固化**
+  （9 场景各有独立均值、池化值≠任何场景值、相对判据确实与本场景均值比、
+  **构造反例证明池化会改变判定结果**）——防止将来有人把"整头"改成跨场景池化。§8.5.10 实现要点由 3 条增至 4 条，
+  §9 该条待办**关闭**。
+  另清理死代码：移除无调用点的 `evaluate_head()`（迭代残留，按入参列表算整头统计量，
+  误用即跨场景池化），整头逻辑只保留在 `evaluate_ruleset()` 内。
+
+- **2026-11-04** 打通**数据接入闭环**（新增 `--data`），并新增 `QUICKSTART.md` 操作手册：
+  - **`--data <落盘根>`**（`samba` / `km512` / `km1024i` 三套通用）：把机台上新扫的 ADA 落盘
+    接进训练。语义由 `dataset.resolve_roots()` 统一定义——
+    不给 = 用 `DEFAULT_ROOTS`；给了 = **默认与默认源合并**（新数据 + 旧数据一起训）；
+    `--replace-data` = 只用新扫的数据。路径自动去重、顺序稳定。
+  - **修 5 个真问题**（都是"接进来才发现"的，逐条有实机证据）：
+    1. **真实 ADA 的波形标签名与 AutoADA 不同** —— V4730 的 ADA 源码
+       （`Advanced-Drop-Analysis.cs:2725-2727`）写 `Pulse0Voltage` / `Pulse0Width` /
+       `Pulse0Tail` / `PulseSlewRate` / `VoltageSupply`；而 `share` 那批数据的
+       `Measurement.xml` 是 AutoADA 自造的写法。`dataset.py` 原来只认后者的一部分 →
+       `slewrate` 加 `PulseSlewRate` 兜底。
+    2. **settings 只保留 14 个固定键 → 各 head 的专属参数取不到**（表现为数据被静默跳过）。
+       改为**保留 Measurement.xml + CSV 尾部的全部原始键**（固定键仍在上层覆盖）。
+    3. **KM1024i 分段宽度标签名错** —— 实测真实落盘是 `KM1024iPulse0Section0Width`
+       （无 "Waveform"），代码期望 `KM1024iWaveformPulse...` → 补为首选候选。
+    4. **KM1024i 实际只有 3 段，不是 15 段** —— 真实波形只点亮 `Section0/1/2`；
+       原判定要求凑满 15 段 → 真实数据一条都算不上。改用 `MIN_SECTIONS=2`，
+       段数不足留 NaN（`aggregate()` 按 NaN 忽略，特征维度仍恒定）。
+       另补 `Results.csv` 尾部那套键名（`Width Pulse Section 1.1 (0)`）。
+    5. **单组时 CV 退化成留一法 → 跑不完** —— 机台一次扫描 = 1 个 session，
+       `make_cv()` 会落到 `LeaveOneOut()`：1024 孔 × 5 模型 = **5120 次训练**，
+       实测单分类评估就 >15 分钟。改为单组一律走分层 KFold
+       （少数类不足 5 个时折数按类数自适应）。
+  - **多根 session 名去冲突**（防分组交叉验证泄漏）：session = 目录相对 root 的路径，
+    两个根下同名目录会撞名 → 分组 CV 把不同来源当同一组 → 指标虚高。
+    多根时给 session 加**根目录名前缀**（单根时保持原样，不动既有报告）。
+  - **实测贯通**：KM1024i 用 V4730 真实落盘（1024 孔）完整走通训练管线
+    （原为"数据被静默跳过"）；修正后 30 秒内跑完。
+  - **新增 `inkjet_ml/test_data_roots.py`**（11 个 unittest，标准库）锁住上述行为：
+    `resolve_roots` 三语义 / session 去冲突 / 真实落盘波形参数可取 /
+    settings 保留全键 / 单组 CV 不得用留一法。
+  - **新增 `QUICKSTART.md`** —— 面向操作的四步循环手册（① 生成扫描方案 → ② 机台执行 ADA
+    → ③ 读回结果排序 → ④ 训练并反向推荐），文中每条命令的输出均为实跑截取，
+    另含常用命令速查与"出问题看哪儿"对照表。
