@@ -34,6 +34,19 @@ AutoADA/LP50-integration-en/
 # ACL 恢复工具输出（临时）
 acl-recovery/
 
+# ---- 机台资产（整个工作区的定位，见 QUICKSTART.md）----
+# 本仓库（InkSmith）只收 ML/ —— 代码、文档、佐证索引。
+# 以下是**机台侧资产**，只在本机保留，体积大且属产线配置：
+#   Recipes/  434 MB 机台配方（95 ADA / 96 DropQCS / 99 APO 等）
+#   AutoADA/   28 MB 厂商集成包 + share 数据副本（= ML/share 的重复副本）
+Recipes/
+AutoADA/
+
+# 本地临时产物（备份与草稿）
+.git-backup-*/
+*.bak
+_conflict/
+
 # ---- 其他 ----
 .DS_Store
 Thumbs.db
