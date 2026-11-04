@@ -13,6 +13,7 @@
 ```
 ML/
 ├── PROJECT_RECORD.md      # 单一事实来源：全部结论、勘误、实测数据
+├── requirements.txt       # 运行依赖
 ├── inkjet_ml/             # 主包
 │   ├── dataset.py         # 读取 ADA 落盘的 Results.csv / Measurement.xml
 │   ├── headml.py          # 5 个模型 + 分组交叉验证（三套喷头共用，可横向比较）
@@ -83,4 +84,7 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 
 ## 许可
 
-代码部分随本仓库沿用上游约定；第三方论文与表格仅供本地查阅，未入库。
+[MIT](LICENSE) — Copyright (c) 2026 lsm-428
+
+`ML/docs/evidence/` 下的第三方论文（PDF）与原始表格（.ods）仅供本地查阅，未入库；
+本项目自产的论文分享 PPT 已入库。
