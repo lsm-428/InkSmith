@@ -1,7 +1,25 @@
+# ---- Python / ML ----
+# 虚拟环境与依赖（ML/.venv 约 345 MB，不入库）
 .venv/
+venv/
 __pycache__/
-data/
-runs/
-out/
-*.pyc
-.pytest_cache
+*.py[cod]
+*.egg-info/
+
+# 训练产物（可由代码重新生成）
+ML/results/
+ML/explore/*.json
+
+# 机台测量数据与官方说明（本地保留，不入库）
+ML/share/
+ML/docs/Advanced_Drop_Analysis/
+ML/docs/DropQCS/
+
+# 第三方文献（他人已发表论文与表格，只本地查阅）
+ML/docs/evidence/*.pdf
+ML/docs/evidence/*.ods
+
+# 其他
+.DS_Store
+Thumbs.db
+.~lock.*

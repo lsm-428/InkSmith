@@ -1,0 +1,13 @@
+# 喷墨驱动波形机器学习 —— 运行依赖
+#
+# 安装：
+#   python -m venv .venv
+#   .venv/Scripts/pip install -r requirements.txt
+#
+# 最低版本按 LP50 实机验证环境（Python 3.11+）给出。
+
+numpy>=1.26
+scipy>=1.11
+scikit-learn>=1.4
+xgboost>=2.0
+pandas>=2.0

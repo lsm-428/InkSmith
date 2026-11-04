@@ -1,82 +1,86 @@
-<div align="center">
-
 # 墨匠 InkSmith
 
-**学会打印，而不是渲染** · *Learn to print, not to render*
+**喷墨驱动波形的机器学习设计** · *ML-driven inkjet drive waveform design*
 
-</div>
+基于 OLPEN LP50 落滴分析（ADA / DropQCS）实测数据，用机器学习反推压电喷头的
+驱动波形，把「人工试配方」变成「数据驱动的波形推荐 + 闭环验证」。
 
-膜层半色调：把连续调厚度图转成 **one-pass 可打印位图**（1-bit 基线，
-**多档体积级已接线**，N=4 追平工业 FS）。主引擎是
-**ED-FS 串行误差扩散**，裁判是**打印物理**（膜基 = 非吸收基材、100% 固含、
-线性体积叠加）。主线 **1-bit film**，下一步 **多档 film**。
+> 本仓库的 `ML/` 目录是全部内容来源。原 LP50 机台仓库（`lsm-428/LP50`）另存有
+> AutoADA 集成、Recipes 机台配方与官方文档，不在此重复。
 
-> 2026-10-21 一天内做完四次手术：CMYK 全彩路线移除 → 复核修复 8 处静默失真 →
-> **神经网络整体拆除** → 依赖声明补全。拆 NN 的证据：模型先验与零先验 PSNR 打平
-> （24.67 vs 24.64），但**均匀性维度 12/12 张全部更差**（灰度尺行墨量 std
-> 0.0244 → 0.0027）——网络不是冗余，是负资产。完整实证见
-> [PITFALLS.md](PITFALLS.md)（54 条，含状态标签）。
-
-## 原理
+## 目录
 
 ```
-连续调厚度图（灰度 = 相对膜厚）
-  → ED-FS：量化误差按 FS 权重扩散给后续像素（权重和严格 = 1）
-    → 1-bit 位图（每像素 0/1 滴墨）
-  → 墨滴铺展（σ≈1.4px 高斯核）线性体积叠加 → 连续膜厚
+ML/
+├── PROJECT_RECORD.md      # 单一事实来源：全部结论、勘误、实测数据
+├── inkjet_ml/             # 主包
+│   ├── dataset.py         # 读取 ADA 落盘的 Results.csv / Measurement.xml
+│   ├── headml.py          # 5 个模型 + 分组交叉验证（三套喷头共用，可横向比较）
+│   ├── ada.py             # 生成 ADA 扫描配方（扫哪些参数、填什么范围）
+│   ├── ada_rank.py        # 读回扫描结果，按 DropQCS 判据给波形组合排序
+│   ├── inkprops.py        # 墨水物性：Z 数（Ohnesorge 倒数）计算与反解
+│   └── heads/             # samba.py / km512.py / km1024i.py 喷头专属模型
+├── docs/evidence/         # 论文 PDF、Table 原始数据（.ods）、论文分享 PPT
+└── explore/               # 数据探索脚本与标签
 ```
 
-灰度不靠"半滴墨"，靠**局部落墨密度**——串行反馈让邻域被迫选不同值，亚档位
-覆盖率是机制的必然结果，**不需要学习**。推理无权重、无 GPU、毫秒级。
-
-## 当前状态（photos_val 12 张，全部可复现）
-
-| 引擎 | 均值 PSNR | 备注 |
-|---|---|---|
-| ED-FS 1-bit（N=1，回归口径） | 24.64 | 差 FS −1.18 |
-| **ED-FS 5 档体积级（N=4）** | **25.81** | **追平 FS**；100µm 膜厚 RMS 0.32µm |
-| Floyd–Steinberg（PIL 1-bit 基线） | 25.82 | |
-| Ghostscript 筛网（工业 1-bit） | 24.67 | |
-
-⚠ 1-bit 时 ED 差 FS 的 1.18dB，**档位加密后单调收敛到 ~0——缺口大头是量化
-步长不是扩散机制**（[PITFALLS #55](PITFALLS.md)）。多档 = 压电喷头波形分级
-变体积墨滴（N+1 档 × 顶滴体积），one-pass 不变；待真机档位线性度标定（③）落地，
-N≥4 后加档饱和、实用点 N=4。
-
-## 用法
+## 快速开始
 
 ```bash
-uv sync
-uv run python eval.py infer photo.jpg --out out/photo   # 位图（墨=黑/0）+ 预览
-uv run python eval.py batch                             # 批量三方对照
-uv run python eval.py one   photo.jpg                   # 单图 + inkcov 独立审计
-uv run python eval.py wedge                             # 灰度尺偏差 + 条纹检测
-uv run python webapp.py                                 # 网页对照（8123）
+cd ML
+python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+
+.venv/Scripts/python.exe -m inkjet_ml.ada --verify            # 配置自检（19 项）
+.venv/Scripts/python.exe -m inkjet_ml.ada --list-heads        # 列出支持的喷头
+.venv/Scripts/python.exe -m inkjet_ml.ada --plan screen       # DOE 方案预览
+.venv/Scripts/python.exe -m inkjet_ml.ada --config screen     # 生成可照填的 recipe 片段
+
+.venv/Scripts/python.exe -m inkjet_ml.heads.samba --recommend --target-speed 3.5
+.venv/Scripts/python.exe -m inkjet_ml.heads.samba --recommend --target-speed 3.5 --leave-nozzle-out
+.venv/Scripts/python.exe -m inkjet_ml.ada_rank "share/NOA89-test-05" --target-speed 3.5
+
+.venv/Scripts/python.exe -m inkjet_ml.inkprops --table1        # Z 数实现自检
 ```
 
-命令、物理参数、引擎铁律见 [AGENTS.md](AGENTS.md)；分阶段操作手册见
-[WORKFLOW.md](WORKFLOW.md)；**动引擎前必读** [PITFALLS.md](PITFALLS.md)。
+## 覆盖的喷头
 
-## 关键物理量
+| 喷头 | 物理孔数 | 备注 |
+|---|---|---|
+| DMC Samba | 12 | 75 DPI，工作温度上限 60 °C |
+| KM512 | 512 | |
+| KM1024i | 1024 | |
+| Spectra S-class（SE·SM·SL） | 128 | |
+| SX3 | 128 | 已停产 |
+| Canon C29 | 256 | |
 
-- `--drops N`：ED 体积档位数（N=1 现役 1-bit；N>1 多档 film，#55）；
-  `--drop-pl` 顶档单滴体积（实测标定后替换名义 6pL）。
-- `--sigma-um`/`--dpi`：铺展 σ 与打印分辨率，`σ[px]=σ[µm]×dpi/25400`；
-  **σ<1.4px 时墨滴不融合、单遍膜呈麻点**。实测可溯（`calc_sigma.py`），不是画质旋钮。
-- **one-pass**：每像素至多一滴（6pL），满覆盖膜厚 `T_max=V/p²` ⇒ **dpi 管量程、
-  不管颗粒**；薄端细度靠档位。推导见 PITFALLS #52。
-- 引擎唯一行为参数 `--bias-gain`（默认 4.0）。
+> `DropAnalysis.Nozzle` 是**要测哪些孔的扫描范围**，不等于喷头总孔数。
 
-## 路线图
+## 关键设计取舍
 
-1. **档位标定（最高优先）**：平铺块实测分级波形落墨线性度（③），实测值传入
-   档位表；名义档 N=4 已验证追平 FS（#55），`ed_fs.py` L 维通用。
-2. **蛇形 2D 核升级（收益待重新定价）**：1-bit 缺口大头已被证明是量化步长
-   （#55），先在 N=4 基线上测残余缺口再决定投入。
-3. **工艺约束**（最大连续膜厚/台阶覆盖/孤立点）：离线优化 DBS/CVO，目标函数用
-   `printer.py` 的物理口径——**不训练网络**（#45/#52 已证；真机偏离线性高斯时
-   答案也是"实测核喂优化器"）。
-4. **其余标定**：② 铺展真实核（孤点序列打→扫描→拟合）。
+- **recipe 参数名随喷头而变**：通用参数（`DropAnalysis.X`）在
+  DMCSamba / CanonC29 / SpectraS-class 里带 `[0]` 下标，在 KM512 / KM1024i 里不带；
+  喷头专属参数（`DropAnalysis.DMC.Samba.*`）一律不带。写错 → ADA **静默不扫描**。
+  `ada.py` 从真实 recipe 反查，不再手写。
+- **目标速度默认 3.5 m/s**（不是 5.0）：后者会让合格率普遍为 0。
+- **Z 数 = 1/Oh = √(ργD)/η**，其中 D 取**喷孔直径**（非滴直径）。
+  ρ / η / γ 三个物性量 LP50 **测不到**，必须外部送检后当特征导入。
+- **每个延时点都是不同次发射的液滴**，不是同一滴的轨迹；延时越接近 0 越难被
+  ADA 判为"液滴"，样本量小。
 
-**验收 = 物理尺度均匀性**（100µm 膜厚 RMS，不用视觉 ΔE）——已实现：
-`batch`/`wedge` 直接输出 µm 读数。
+## 当前结论摘要
+
+| 结论 | 数值 |
+|---|---|
+| 实测数据规模 | 9 会话 × 12 孔 = 108 孔 |
+| 形态分布 | 单滴 102 / 不喷 6 / 卫星滴 0 |
+| 方差分解 | 会话间 88.3% / 会话内 11.7% |
+| 唯一波形点 | 4 组 |
+| leave-nozzle-out 回归 R² | 含孔号 0.9433 / 仅波形 0.8897 |
+| 分组交叉验证宏 F1 | 含孔号 0.7135 / 不含 0.4857 |
+
+**当前瓶颈是数据不是代码**：现有 108 孔是「成滴窗口切片」，卫星滴 0 例、
+波形只有 4 个点、电压与宽度共线。
+
+## 许可
+
+代码部分随本仓库沿用上游约定；第三方论文与表格仅供本地查阅，未入库。
