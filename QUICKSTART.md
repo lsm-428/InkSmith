@@ -7,8 +7,10 @@
 > 论文原文与原始表格在 [`docs/evidence/`](docs/evidence/README.md)
 > （平台官方手册仅本机查阅，不入库）。
 >
-> 文中每条命令的输出都是**实跑截取**（2026-11-04，Windows + `.venv`）。
-> 环境准备：`python -m venv .venv` → `.venv\Scripts\pip install -r requirements.txt`。
+> 文中每条命令的输出都是**实跑截取**（2026-11-04，Windows + UV 环境）。
+> 环境准备：`uv venv` → `uv pip install -r requirements.txt`。
+> 下文简写为 `python -m …`，UV 环境下等价于 `uv run python -m …`；
+> 已激活 `.venv` 时直接写 `python` 即可。
 
 ---
 

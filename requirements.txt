@@ -1,8 +1,8 @@
 # 喷墨驱动波形机器学习 —— 运行依赖
 #
-# 安装：
-#   python -m venv .venv
-#   .venv/Scripts/pip install -r requirements.txt
+# 安装（UV 环境）：
+#   uv venv
+#   uv pip install -r requirements.txt
 #
 # 最低版本按 LP50 实机验证环境（Python 3.11+）给出。
 

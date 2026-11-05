@@ -28,26 +28,13 @@
 ## 快速开始
 
 ```bash
-python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
-
-.venv/Scripts/python.exe -m inkjet_ml.ada --verify            # 配置自检（19 项）
-.venv/Scripts/python.exe -m inkjet_ml.ada --list-heads        # 列出支持的喷头
-.venv/Scripts/python.exe -m inkjet_ml.ada --plan screen       # DOE 方案预览
-.venv/Scripts/python.exe -m inkjet_ml.ada --config screen     # 生成可照填的 recipe 片段
-
-.venv/Scripts/python.exe -m inkjet_ml.ada_rank "<落盘根>" --rules "<RulesConfig.xml>"
-                                                             # 用官方 DropQCS 规则判合格
-.venv/Scripts/python.exe -m inkjet_ml.heads.samba --recommend --target-speed 3.5
-.venv/Scripts/python.exe -m inkjet_ml.heads.samba --recommend --target-speed 3.5 --leave-nozzle-out
-.venv/Scripts/python.exe -m inkjet_ml.heads.samba --recommend --data "<新落盘根>"
-                                                             # 把新扫的数据接进训练
-.venv/Scripts/python.exe -m inkjet_ml.inkprops --table1        # Z 数实现自检
-
-.venv/Scripts/python.exe -m unittest inkjet_ml.test_ncalc        # 规则求值器自检
-.venv/Scripts/python.exe -m unittest inkjet_ml.test_data_roots   # 数据接入链路自检
+uv venv && uv pip install -r requirements.txt
+uv run python -m inkjet_ml.ada --verify            # 配置自检（19/19）
+uv run python -m inkjet_ml.heads.samba --recommend --target-speed 3.5
 ```
 
-完整操作流程见 [`QUICKSTART.md`](QUICKSTART.md)。
+四步循环（生成扫描方案 → 机台执行 → 读回排序 → 训练推荐）、
+全部命令与故障对照见 [`QUICKSTART.md`](QUICKSTART.md)。
 
 ## 覆盖的喷头
 
