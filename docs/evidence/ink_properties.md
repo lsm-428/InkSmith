@@ -17,8 +17,9 @@
 | `KY-XP2` | micro resist **mr-NIL212FC 200nm** | `PG_mrNIL212FC_20220211.pdf` | 6 | 72 |
 | — | 喷头规格（非墨水） | `Dimatix Materials Cartridge-Samba Cartridge.pdf` | — | — |
 
-合计 **38 会话 / 437 孔**，全部 `Printhead = 1117`（DMC Samba）。
-`DIJ-SR200-3` 缺 `Measurement.xml`，其 `Results.csv` 仍计入孔数。
+合计 **38 会话 / 437 孔**（`Results.csv` 数据行），全部 `Printhead = 1117`（DMC Samba）。
+图像对 **425**：`DIJ-SR200-3` 缺 `Measurement.xml`，其 png/xml 亦全缺（12 孔为纯测量记录），
+该会话 `Results.csv` 仍计入 437；故 png+xml 成对资产 = 425 < 437。
 
 ## 2. 物性（Z 的输入）
 

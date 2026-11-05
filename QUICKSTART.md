@@ -19,7 +19,7 @@
 | 位置 | 内容 | 入库 |
 |---|---|---|
 | `inkjet_ml/`、`*.md`、`explore/labels.csv` | 源码与文档 | ✅ |
-| `share/` | DMC Samba 实测数据（9 会话 / 108 孔） | ❌ `.gitignore` |
+| `share/` | DMC Samba 实测数据（38 会话 / 437 孔 / 6 类墨水） | ❌ `.gitignore` |
 | `results/`、`.venv/`、`.workbuddy/` | 训练产物 / 环境 / 本地状态 | ❌ `.gitignore` |
 
 机台新扫的数据不在此目录，用 `--data <落盘根>` 接进训练（见 §4）。
@@ -124,7 +124,7 @@ uv run python -m inkjet_ml.ada --config narrow
 - `Checkbox = 1` 的参数才进扫描，**没勾的维持原值**；
 - 参数名后缀 `[0]` 与否，**不同喷头不一样**（`ada.py` 已按真实 recipe 反查，不要手改）；
 - `InkPressure = -1` 是**故意**超出 ADA 默认区间（-25…-10）——真实工作点必须被包含，
-  否则新数据与既有 108 孔工作点不同、无法合并。
+  否则新数据与既有数据工作点不同、无法合并（AF-1 那批是 -20、DIJ-SR200 是 -4，见 `docs/evidence/ink_properties.md`）。
 
 ### 1.4 校验填得对不对
 
@@ -212,8 +212,8 @@ uv run python -m inkjet_ml.heads.samba --recommend --target-speed 3.5
 
 ```
 数据根：D:\Gitee\LP50\ML\share
-样本: 108  特征: 7  会话: 9
-类别分布: 不喷 6 / 单滴 102 / 卫星 0
+样本: 425  特征: 7  会话: 37
+类别分布: 不喷 76 / 单滴 331 / 卫星 18
 
 ## 反向推荐：目标速度 3.50 m/s ±20%
 
