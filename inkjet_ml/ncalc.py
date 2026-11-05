@@ -48,6 +48,19 @@ class NCalcError(ValueError):
 
 #: NCalc 的 18 个内置函数（官方 `Create_ruleset.htm` 的 "build in functions" 表）
 #: —— 全是纯数学函数，无字符串/集合操作。
+
+
+def _ieee_remainder(x, y):
+    """IEEE 754 余数：`x - y * n`，其中 n 是最接近 x/y 的整数（取偶）。
+
+    Python 的 `%` 对负数返回非负余数（与 C# 的 `%` 一致但与 IEEE 不同），
+    故这里必须自己算，不能用 `x % y`。
+    """
+    if y == 0:
+        raise ZeroDivisionError("IEEERemainder: 除数为 0")
+    return math.remainder(x, y)
+
+
 BUILTIN_FUNCTIONS: Dict[str, Any] = {
     "Abs": abs,
     "Acos": math.acos,
@@ -57,6 +70,7 @@ BUILTIN_FUNCTIONS: Dict[str, Any] = {
     "Cos": math.cos,
     "Exp": math.exp,
     "Floor": math.floor,
+    "IEEERemainder": _ieee_remainder,
     "Log": math.log,
     "Log10": math.log10,
     "Max": max,

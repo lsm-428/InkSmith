@@ -7,7 +7,7 @@
 
 覆盖：
   1. 表达式求值：官方 8 套规则 + Default 用到的**全部 13 条表达式**；
-  2. 18 个内置函数；
+  2. 19 个内置函数（官方文档标题写「18 个」但表格实为 19 个）；
   3. 语法/注入防护；
   4. 规则集执行：8 套官方规则 × 4 个真实数据源的**语义交叉验证**
      （拒绝孔数与规则语义手工推算值比对）。
@@ -20,7 +20,7 @@ import unittest
 
 from .dropqcs import evaluate_ruleset, head_statistics, load_ruleset
 from .dropqcs_vars import read_results_csv
-from .ncalc import NCalcError, eval_expr, parse_expr
+from .ncalc import BUILTIN_FUNCTIONS, NCalcError, eval_expr, parse_expr
 
 #: 新基线机台的规则目录（V4730 实测 8 套齐全；旧机台没有）
 RULES_DIR = r"D:\Oleton\Inkjet\LP50 V4730 4-2026 & Canon FAT\Rules"
@@ -96,11 +96,26 @@ class TestEvalExpr(unittest.TestCase):
                  ("Floor(1.9)", 1), ("Ceiling(1.1)", 2), ("Sign(-5)", -1),
                  ("Log(1)", 0), ("Log10(100)", 2), ("Exp(0)", 1),
                  ("Sin(0)", 0), ("Cos(0)", 1), ("Tan(0)", 0),
-                 ("Acos(1)", 0), ("Asin(0)", 0), ("Atan(0)", 0)]
+                 ("Acos(1)", 0), ("Asin(0)", 0), ("Atan(0)", 0),
+                 ("IEEERemainder(3, 2)", -1)]
         for expr, want in cases:
             with self.subTest(expr=expr):
                 got = eval_expr(expr, {})
                 self.assertAlmostEqual(got, want, places=9)
+
+    def test_builtin_set_matches_official_19(self):
+        """内置函数集合必须与官方 `Create_ruleset.htm` 的 19 个完全一致。
+
+        官方文档标题写「18 个」但表格实际列了 19 个（多一个 IEEERemainder）。
+        少任何一个 → 官方规则集在离线求值器上会直接报错。
+        """
+        official = {
+            "Abs", "Acos", "Asin", "Atan", "Ceiling", "Cos", "Exp", "Floor",
+            "IEEERemainder", "Log", "Log10", "Max", "Min", "Pow", "Round",
+            "Sign", "Sin", "Sqrt", "Tan",
+        }
+        self.assertEqual(set(BUILTIN_FUNCTIONS), official)
+        self.assertEqual(len(BUILTIN_FUNCTIONS), 19)
 
     def test_missing_variable_raises(self):
         with self.assertRaises(NCalcError):

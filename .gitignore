@@ -13,6 +13,10 @@ __pycache__/
 ML/results/
 ML/explore/*.json
 
+# 工具临时目录（PPT 生成器 / 缓存）
+ML/.slidep/
+ML/.cache/
+
 # 机台测量数据与官方说明（本地保留，不入库）
 ML/share/
 ML/docs/Advanced_Drop_Analysis/
