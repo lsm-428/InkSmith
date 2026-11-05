@@ -5,13 +5,12 @@
 基于 OLPEN LP50 落滴分析（ADA / DropQCS）实测数据，用机器学习反推压电喷头的
 驱动波形，把「人工试配方」变成「数据驱动的波形推荐 + 闭环验证」。
 
-> 本仓库的 `ML/` 目录是全部内容来源。原 LP50 机台仓库（`lsm-428/LP50`）另存有
+> 本仓库即项目全部内容来源。原 LP50 机台仓库（`lsm-428/LP50`）另存有
 > AutoADA 集成、Recipes 机台配方与官方文档，不在此重复。
 
 ## 目录
 
 ```
-ML/
 ├── PROJECT_RECORD.md      # 单一事实来源：全部结论、勘误、实测数据
 ├── QUICKSTART.md          # 操作手册：四步循环（设计→扫描→排序→推荐）+ 命令速查
 ├── requirements.txt       # 运行依赖
@@ -52,7 +51,7 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 .venv/Scripts/python.exe -m unittest inkjet_ml.test_data_roots   # 数据接入链路自检
 ```
 
-完整操作流程见 [`ML/QUICKSTART.md`](ML/QUICKSTART.md)。
+完整操作流程见 [`QUICKSTART.md`](QUICKSTART.md)。
 
 ## 覆盖的喷头
 
@@ -100,11 +99,11 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 波形只有 4 个点、电压与宽度共线。
 
 > **实测数据不入库**（机台本地资产，见 `.gitignore`）。复现需要自行采集，
-> 或用 `ML/explore/labels.csv` 里的同源标签表。
+> 或用 `explore/labels.csv` 里的同源标签表。
 
 ## 许可
 
 [MIT](LICENSE) — Copyright (c) 2026 lsm-428
 
-`ML/docs/evidence/` 下的第三方论文（PDF）与原始表格（.ods）仅供本地查阅，未入库；
+`docs/evidence/` 下的第三方论文（PDF）与原始表格（.ods）仅供本地查阅，未入库；
 本项目自产的论文分享 PPT 已入库。

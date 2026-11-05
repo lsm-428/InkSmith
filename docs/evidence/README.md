@@ -3,7 +3,7 @@
 本目录存放 **PROJECT_RECORD.md 各条结论的原始依据**。  
 原则：**结论写在 PROJECT_RECORD，依据存放在这里**——两者必须能互相追溯。
 
-> 建立于 2026-10-13。原位置为 `ML/` 根目录，现集中到 `docs/evidence/`。
+> 建立于 2026-10-13。原位置为仓库根目录，现集中到 `docs/evidence/`。
 
 ---
 
@@ -179,7 +179,7 @@
 
 | 内容         | 位置                                     | 原因                            |
 | ---------- | -------------------------------------- | ----------------------------- |
-| ADA 资产解析产物 | `ML/explore/*.json`、`labels.csv`       | 机器生成、可重新解析；且被 `.gitignore` 排除 |
-| 代码 / 管线文档  | `ML/PROJECT_RECORD.md`、`ML/inkjet_ml/` | 属「结论」而非「佐证」                   |
-| 训练产物       | `ML/results/`                          | 可由代码重新生成，`.gitignore` 已排除     |
+| ADA 资产解析产物 | `explore/*.json`、`labels.csv`         | 机器生成、可重新解析；且被 `.gitignore` 排除 |
+| 代码 / 管线文档  | `PROJECT_RECORD.md`、`inkjet_ml/`       | 属「结论」而非「佐证」                   |
+| 训练产物       | `results/`                             | 可由代码重新生成，`.gitignore` 已排除     |
 | 实机安装目录     | `D:\Oleton\Inkjet\LP50 V4730 …`        | 在本机，不随库分发；路径见上表               |

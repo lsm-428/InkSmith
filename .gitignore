@@ -2,7 +2,7 @@
 _待删除/
 
 # ---- Python / ML ----
-# 虚拟环境与依赖（ML/.venv 约 345 MB，不入库）
+# 虚拟环境与依赖（.venv 约 345 MB，不入库）
 .venv/
 venv/
 __pycache__/
@@ -10,33 +10,33 @@ __pycache__/
 *.egg-info/
 
 # 训练产物（可由代码重新生成）
-ML/results/
-ML/explore/*.json
+results/
+explore/*.json
 
 # 工具临时目录（PPT 生成器 / 缓存）
-ML/.slidep/
-ML/.cache/
+.slidep/
+.cache/
 # PPT 重建过程中的中间产物（文件名以 _ 开头或 _new 结尾）
-ML/DropQCS介绍/_*.pptx
-ML/DropQCS介绍/*_new.pptx
+DropQCS介绍/_*.pptx
+DropQCS介绍/*_new.pptx
 
 # 机台测量数据与官方说明（本地保留，不入库）
-ML/share/
-ML/docs/Advanced_Drop_Analysis/
-ML/docs/DropQCS/
+share/
+docs/Advanced_Drop_Analysis/
+docs/DropQCS/
 
 # ---- 🔴 平台官方内容：本地可用，一律不入库 ----
 # 厂商（SUSS MicroTec）文档与素材属版权物，
 # 即使只是索引/摘录/截图，也不应出现在公开仓库里。
 # 本机使用方式：直接读本目录下的文件，不经过 git。
 # 官方文档索引 + 逐条摘录（含原文引用）
-ML/docs/README.md
+docs/README.md
 # DropQCS 介绍 PPT（含官方界面截图）
-ML/DropQCS介绍/
+DropQCS介绍/
 
 # 第三方文献（他人已发表论文与表格，只本地查阅）
-ML/docs/evidence/*.pdf
-ML/docs/evidence/*.ods
+docs/evidence/*.pdf
+docs/evidence/*.ods
 # 注：docs/evidence/ 下的 .pptx 是本项目自产的论文分享稿（配图均为论文实验照片，
 # 不含官方素材），**可以入库**，故不排除。
 
@@ -53,12 +53,16 @@ AutoADA/LP50-integration-en/
 acl-recovery/
 
 # ---- 机台资产（整个工作区的定位，见 QUICKSTART.md）----
-# 本仓库（InkSmith）只收 ML/ —— 代码、文档、佐证索引。
+# 本仓库根目录就是 ML/ —— 只收代码、文档、佐证索引。
 # 以下是**机台侧资产**，只在本机保留，体积大且属产线配置：
 #   Recipes/  434 MB 机台配方（95 ADA / 96 DropQCS / 99 APO 等）
-#   AutoADA/   28 MB 厂商集成包 + share 数据副本（= ML/share 的重复副本）
+#   AutoADA/   28 MB 厂商集成包 + share 数据副本（= 本目录 share/ 的重复副本）
 Recipes/
 AutoADA/
+
+# ---- AI 助手工作区（本地状态，不入库）----
+# 记忆与工作日志是工具的本地状态，不是项目资产
+.workbuddy/
 
 # 本地临时产物（备份与草稿）
 .git-backup-*/
