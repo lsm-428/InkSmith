@@ -16,6 +16,9 @@ ML/explore/*.json
 # 工具临时目录（PPT 生成器 / 缓存）
 ML/.slidep/
 ML/.cache/
+# PPT 重建过程中的中间产物（文件名以 _ 开头或 _new 结尾）
+ML/DropQCS介绍/_*.pptx
+ML/DropQCS介绍/*_new.pptx
 
 # 机台测量数据与官方说明（本地保留，不入库）
 ML/share/
