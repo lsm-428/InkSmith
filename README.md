@@ -29,12 +29,31 @@
 
 ```bash
 uv venv && uv pip install -r requirements.txt
+
+# ===== 设计扫描方案 =====
 uv run python -m inkjet_ml.ada --verify            # 配置自检（19/19）
+uv run python -m inkjet_ml.ada --list-heads        # 列出支持的喷头
+uv run python -m inkjet_ml.ada --plan screen       # DOE 方案预览
+uv run python -m inkjet_ml.ada --config screen     # 可照填的 recipe 片段
+
+# ===== 读回结果 =====
+uv run python -m inkjet_ml.ada_rank "<落盘根>" --rules "<RulesConfig.xml>"   # 官方规则判合格
+
+# ===== 训练与推荐 =====
 uv run python -m inkjet_ml.heads.samba --recommend --target-speed 3.5
+uv run python -m inkjet_ml.heads.samba --recommend --target-speed 3.5 --leave-nozzle-out
+uv run python -m inkjet_ml.heads.samba --recommend --data "<新落盘根>"       # 接入新扫数据
+
+# ===== 墨水 =====
+uv run python -m inkjet_ml.inkprops --table1       # Z 数实现自检
+
+# ===== 自检 =====
+uv run python -m unittest inkjet_ml.test_ncalc        # 规则求值器（16 项）
+uv run python -m unittest inkjet_ml.test_data_roots   # 数据接入链路（12 项）
 ```
 
-四步循环（生成扫描方案 → 机台执行 → 读回排序 → 训练推荐）、
-全部命令与故障对照见 [`QUICKSTART.md`](QUICKSTART.md)。
+四步循环（生成扫描方案 → 机台执行 → 读回排序 → 训练推荐）与故障对照见
+[`QUICKSTART.md`](QUICKSTART.md)；结论与依据见 [`PROJECT_RECORD.md`](PROJECT_RECORD.md)。
 
 ## 覆盖的喷头
 
