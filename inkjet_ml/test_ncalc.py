@@ -104,9 +104,9 @@ class TestEvalExpr(unittest.TestCase):
                 self.assertAlmostEqual(got, want, places=9)
 
     def test_builtin_set_matches_official_19(self):
-        """内置函数集合必须与官方 `Create_ruleset.htm` 的 19 个完全一致。
+        """内置函数集合必须与平台规则引擎支持的 19 个完全一致。
 
-        官方文档标题写「18 个」但表格实际列了 19 个（多一个 IEEERemainder）。
+        易被漏掉的是 IEEERemainder——它不在常见的三角/对数函数列表里，却确实受支持。
         少任何一个 → 官方规则集在离线求值器上会直接报错。
         """
         official = {

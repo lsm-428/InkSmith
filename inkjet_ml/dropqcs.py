@@ -3,13 +3,13 @@
 
 为什么需要它
 ------------
-`ncalc.py` 只负责**单条表达式**求值。但官方规则集是**有状态**的两层结构：
+`ncalc.py` 只负责**单条表达式**求值。但规则集是**有状态**的两层结构：
 
     <NozzlesRule>  逐孔判，动作（Accept/Reject）会写 **[Result]**
     <HeadsRule>    整头判，同样可引用上一条规则的 [Result]
 
 `[Result]` 是"上一条规则的动作结果"，**不是**纯表达式能表达的量，
-必须由执行器维护状态机。官方 `NestedNozzleRule` 样例正是靠它实现
+必须由执行器维护状态机。预置的嵌套规则样例正是靠它实现
 "先按位置拒，但速度高又放行"这种嵌套逻辑。
 
 支持的动作（只读执行，不产生机台副作用）
@@ -103,7 +103,7 @@ def _parse_actions(cond: ET.Element) -> List[RuleAction]:
 def load_ruleset(path: str) -> RuleSet:
     """读一份 `RulesConfig.xml`，返回 `RuleSet`。
 
-    只取**第一个** `<Rule>`（官方 8 套样例都只有一个）。
+    只取**第一个** `<Rule>`（预置样例都只有一个）。
     """
     p = Path(path)
     try:
@@ -171,20 +171,20 @@ def evaluate_nozzle(ruleset: RuleSet, variables: Dict[str, Any],
 
 
 def head_statistics(nozzle_vars: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """整头级统计量 —— 官方 `[Printhead*]` 变量的来源。
+    """整头级统计量 —— `[Printhead*]` 变量的来源。
 
-    官方 `Default.RulesConfig.xml` 的 HeadRules 注释块列出：
+    规则引擎的整头级变量包括：
         [PrintheadXCenterAverage] [PrintheadYCenterAverage]
         [PrintheadSpeedAverage]  [PrintheadAngleAverage]
         [PrintheadVolumeTotalAverage]
         [PrintheadSpeedStdDev]   [PrintheadAngleStdDev]
         [PrintheadVolumeTotalStdDev]
 
-    **取整头所有孔的均值/标准差**（官方 `AverageSpeedWithinMargin` 的语义：
+    **取整头所有孔的均值/标准差**（`AverageSpeedWithinMargin` 的语义：
     "速度在整头均值 ±20% 内"）。
 
     ⚠️ **"整头"的作用域 = 一个测量场景（一份 `Results.csv`）**（2026-11-04 明确）。
-    官方机台上"整头"是一次测量里的**整个喷头**；本项目做的是**跨波形组合的离线排序**，
+    机台上"整头"是一次测量里的**整个喷头**；本项目做的是**跨波形组合的离线排序**，
     一个扫描目录下有**成百上千份 `Results.csv`**（每份 = 一个波形组合 = 一次测量）。
     若把整头统计量跨 `Results.csv` 汇总，相对判据（如 `[PrintheadSpeedAverage]`）
     的参照系就变成"所有组合的池化均值"——那既不对应机台上的任何一次测量，
@@ -220,12 +220,12 @@ def head_statistics(nozzle_vars: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def evaluate_ruleset(ruleset: RuleSet,
                      nozzle_vars: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """完整执行一份规则集（官方两级语义）。
+    """完整执行一份规则集（两级语义）。
 
     ⚠️ **入参 `nozzle_vars` 必须是"同一个测量场景"内的逐孔变量**（同一份 `Results.csv`）。
     整头级统计量只在这个场景内汇总——见 `head_statistics()` 的说明。
 
-    ⚠️ **执行顺序很关键**：官方规则里**孔级规则也可能引用整头级变量**
+    ⚠️ **执行顺序很关键**：规则里**孔级规则也可能引用整头级变量**
     （`AverageSpeedWithinMargin` 就是：`[SpeedAverage] < ([PrintheadSpeedAverage]*0.8)`，
     `FastestDropletWithinScreenMargin` / `NestedNozzleRule` 同理），
     而整头级变量（`[PrintheadSpeedAverage]` 等）要**先由本场景所有孔的数据汇总**才能得出。

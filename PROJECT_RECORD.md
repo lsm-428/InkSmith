@@ -504,7 +504,7 @@ ADA 默认区间是为"看全程边界"设计的**极密网格**：
 ### 8.5.3 DropQCS 判据语法（NCalc 表达式）
 
 来源 `<LP50 V4730 4-2026 & Canon FAT>\Rules\Examples\*.RulesConfig.xml`；
-**2026-10-13 已用官方文档 `docs/DropQCS/3_System_Description/DropQCS_-_Rules.htm` 补全并核对**（见 §8.5.8）。
+**2026-10-13 已对照平台官方手册的规则章节补全并逐条核对**（见 §8.5.8；手册原件在本机，不入库）。
 
 - 结构：`<Rule>` → 多个 `<NozzlesRule>`（逐条求值，可多级嵌套）→ `<HeadsRule>`；
 - 喷嘴级变量：`[Present] [NrDroplets] [Nozzle] [Printhead] [SpeedMin/Max/Average]
@@ -629,7 +629,7 @@ python -m inkjet_ml.ada_rank <扫描目录> --target-speed 3.5 --top 20 --csv �
 
 | §8.5 原结论 | 核对结果 |
 |---|---|
-| 只扫勾选的参数 | ✅ 印证（`Perform_a_measurement.htm`：「Enable the checkbox」） |
+| 只扫勾选的参数 | ✅ 印证（手册的测量步骤页明确要求勾选后才纳入扫描） |
 | `a:b:c` / `a;b` 语法 | ✅ **完全印证且更详**（官方表格明确 `1:3;5;8;13` 混合写法） |
 | 判据是 NCalc 表达式 | ✅ 印证，并补出**完整运算符表 + 27 个内置函数** |
 | 变量清单 / 动作清单 | ⚠️ **均不完整**，已补全（见下） |
@@ -664,7 +664,7 @@ python -m inkjet_ml.ada_rank <扫描目录> --target-speed 3.5 --top 20 --csv �
 
 ### 8.5.9 官方预置的 8 套 DropQCS 规则（本项目直接可用）
 
-`docs/DropQCS/5_Operations/Example_ruleses.htm` 逐个说明，本机 V4730 实测 8 个文件齐全：
+平台手册逐个说明了这些预置规则，本机 V4730 实测 8 个文件齐全：
 
 | 规则集 | 判据要点 | 对本项目 |
 |---|---|---|

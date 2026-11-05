@@ -25,9 +25,20 @@ ML/share/
 ML/docs/Advanced_Drop_Analysis/
 ML/docs/DropQCS/
 
+# ---- 🔴 平台官方内容：本地可用，一律不入库 ----
+# 厂商（SUSS MicroTec）文档与素材属版权物，
+# 即使只是索引/摘录/截图，也不应出现在公开仓库里。
+# 本机使用方式：直接读本目录下的文件，不经过 git。
+# 官方文档索引 + 逐条摘录（含原文引用）
+ML/docs/README.md
+# DropQCS 介绍 PPT（含官方界面截图）
+ML/DropQCS介绍/
+
 # 第三方文献（他人已发表论文与表格，只本地查阅）
 ML/docs/evidence/*.pdf
 ML/docs/evidence/*.ods
+# 注：docs/evidence/ 下的 .pptx 是本项目自产的论文分享稿（配图均为论文实验照片，
+# 不含官方素材），**可以入库**，故不排除。
 
 # ---- 不入库的大件 / 临时产物 ----
 # 机台录屏（视频，几十 MB）

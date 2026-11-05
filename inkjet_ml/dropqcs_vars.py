@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""从 ADA 的 `Results.csv` 还原 DropQCS 官方规则变量。
+"""从 ADA 的 `Results.csv` 还原 DropQCS 规则变量。
 
-变量清单与语义来自官方 `Rules\\Default.RulesConfig.xml` 顶部的注释块
+变量清单与语义来自平台规则集自带的说明块
 （"NB: Parameter names are case sensitive"那一段），逐条对齐：
 
     [Present] bool            孔是否出滴
@@ -15,7 +15,7 @@
     [YCenterAverage] [YCenterMin] [YCenterMax]   Y 位置 [um]
     [XMin] [XMax] [YMin] [YMax]               液滴包围盒
 
-⚠️ **哨兵值**：官方文档写明速度无效时为**负**、角度无效时为 **-180**。
+⚠️ **哨兵值**：规则引擎约定速度无效时为**负**、角度无效时为 **-180**。
 0 滴孔的 CSV 行**只有 10 列**（后续液滴列直接省略，不是空串）——解析必须按
 "组"读，不能按固定下标读，否则会错位。
 
@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional
 __all__ = ["Droplet", "NozzleVars", "read_results_csv", "nozzle_vars",
            "INVALID_SPEED", "INVALID_ANGLE"]
 
-#: 官方哨兵值（见 Default.RulesConfig.xml 注释）
+#: 规则引擎的哨兵值约定
 INVALID_SPEED = -1.0
 INVALID_ANGLE = -180.0
 
@@ -74,14 +74,14 @@ class Droplet:
 
 @dataclass
 class NozzleVars:
-    """一个喷嘴的全部官方变量。"""
+    """一个喷嘴的全部规则变量。"""
     nozzle: Optional[int] = None
     printhead: int = 1
     nr_droplets: int = 0
     total_volume: float = 0.0
     droplets: List[Droplet] = field(default_factory=list)
 
-    # ---- 官方变量构造 ----
+    # ---- 规则变量构造 ----
     def variables(self) -> Dict[str, Any]:
         """生成 DropQCS 规则可用的变量字典（键不带方括号）。"""
         sp = [d.speed for d in self.droplets if d.speed is not None]
