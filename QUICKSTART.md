@@ -7,10 +7,8 @@
 > 论文原文与原始表格在 [`docs/evidence/`](docs/evidence/README.md)
 > （平台官方手册仅本机查阅，不入库）。
 >
-> 文中每条命令的输出都是**实跑截取**（2026-11-04，Windows + UV 环境）。
+> 文中命令均以 `uv run` 执行，输出为**实跑截取**（2026-11-04，Windows + UV 环境）。
 > 环境准备：`uv venv` → `uv pip install -r requirements.txt`。
-> 下文简写为 `python -m …`，UV 环境下等价于 `uv run python -m …`；
-> 已激活 `.venv` 时直接写 `python` 即可。
 
 ---
 
@@ -54,7 +52,7 @@
 ### 1.1 先看这版机器能扫什么
 
 ```powershell
-python -m inkjet_ml.ada --dims
+uv run python -m inkjet_ml.ada --dims
 ```
 
 输出（节选，真实解析自 V4730 的 `95 ADA` 流程）：
@@ -76,11 +74,11 @@ python -m inkjet_ml.ada --dims
 ### 1.2 看扫描方案（5 档，按顺序推进）
 
 ```powershell
-python -m inkjet_ml.ada --plan screen      # 阶段1 粗筛：找可行波形域
-python -m inkjet_ml.ada --plan narrow      # 阶段2 围绕最优点局部加密
-python -m inkjet_ml.ada --plan window      # 阶段2b 压力/温度独立成维
-python -m inkjet_ml.ada --plan delay       # 阶段2c 成滴形貌延时序列（LEDDelay 0–220 µs）
-python -m inkjet_ml.ada --plan uniform     # 阶段3 全头重复性扫描
+uv run python -m inkjet_ml.ada --plan screen      # 阶段1 粗筛：找可行波形域
+uv run python -m inkjet_ml.ada --plan narrow      # 阶段2 围绕最优点局部加密
+uv run python -m inkjet_ml.ada --plan window      # 阶段2b 压力/温度独立成维
+uv run python -m inkjet_ml.ada --plan delay       # 阶段2c 成滴形貌延时序列（LEDDelay 0–220 µs）
+uv run python -m inkjet_ml.ada --plan uniform     # 阶段3 全头重复性扫描
 ```
 
 `--plan screen` 实际输出（节选）：
@@ -102,7 +100,7 @@ python -m inkjet_ml.ada --plan uniform     # 阶段3 全头重复性扫描
 ### 1.3 导出可直接照填 HMI 的 recipe
 
 ```powershell
-python -m inkjet_ml.ada --config narrow
+uv run python -m inkjet_ml.ada --config narrow
 ```
 
 输出是**完整 XML**，直接抄进 HMI 的 ADA recipe：
@@ -131,7 +129,7 @@ python -m inkjet_ml.ada --config narrow
 ### 1.4 校验填得对不对
 
 ```powershell
-python -m inkjet_ml.ada --verify --head DMCSamba
+uv run python -m inkjet_ml.ada --verify --head DMCSamba
 ```
 
 应输出 `19/19 全部一致`（与实机 flow 文件交叉校验）。
@@ -160,7 +158,7 @@ python -m inkjet_ml.ada --verify --head DMCSamba
 ## 3. 第 ③ 步：读回结果并排序
 
 ```powershell
-python -m inkjet_ml.ada_rank "<落盘根>"
+uv run python -m inkjet_ml.ada_rank "<落盘根>"
 ```
 
 输出（真实跑，share 数据）：
@@ -181,7 +179,7 @@ python -m inkjet_ml.ada_rank "<落盘根>"
 机台自带的 **8 套示例规则 + `Default`**（共 9 个 `*.RulesConfig.xml`）可直接用：
 
 ```powershell
-python -m inkjet_ml.ada_rank "<落盘根>" --rules "D:\Oleton\Inkjet\LP50 V4730 4-2026 & Canon FAT\Rules\Examples\SingleDroplet.RulesConfig.xml"
+uv run python -m inkjet_ml.ada_rank "<落盘根>" --rules "D:\Oleton\Inkjet\LP50 V4730 4-2026 & Canon FAT\Rules\Examples\SingleDroplet.RulesConfig.xml"
 ```
 
 | 规则 | 判什么 |
@@ -199,7 +197,7 @@ python -m inkjet_ml.ada_rank "<落盘根>" --rules "D:\Oleton\Inkjet\LP50 V4730 
 ### 导出排序表
 
 ```powershell
-python -m inkjet_ml.ada_rank "<落盘根>" --top 20 --csv 排序表.csv
+uv run python -m inkjet_ml.ada_rank "<落盘根>" --top 20 --csv 排序表.csv
 ```
 
 ---
@@ -207,7 +205,7 @@ python -m inkjet_ml.ada_rank "<落盘根>" --top 20 --csv 排序表.csv
 ## 4. 第 ④ 步：训练 + 反向推荐
 
 ```powershell
-python -m inkjet_ml.heads.samba --recommend --target-speed 3.5
+uv run python -m inkjet_ml.heads.samba --recommend --target-speed 3.5
 ```
 
 输出（真实跑，截选）：
@@ -237,15 +235,15 @@ python -m inkjet_ml.heads.samba --recommend --target-speed 3.5
 
 ```powershell
 # 默认：既有数据 + 新扫数据 合并训练
-python -m inkjet_ml.heads.samba --recommend --target-speed 3.5 `
+uv run python -m inkjet_ml.heads.samba --recommend --target-speed 3.5 `
     --data "<落盘根>"
 
 # 只用新扫的数据（丢弃默认源）
-python -m inkjet_ml.heads.samba --recommend --target-speed 3.5 `
+uv run python -m inkjet_ml.heads.samba --recommend --target-speed 3.5 `
     --data "<落盘根>" --replace-data
 
 # 多个根可重复给 --data
-python -m inkjet_ml.heads.samba --data "<根A>" --data "<根B>"
+uv run python -m inkjet_ml.heads.samba --data "<根A>" --data "<根B>"
 ```
 
 `--data` 三个喷头通用（`samba` / `km512` / `km1024i`），语义见 `dataset.resolve_roots()`。
@@ -254,10 +252,10 @@ python -m inkjet_ml.heads.samba --data "<根A>" --data "<根B>"
 
 ```powershell
 # 迁移性评估：换到没见过的孔还能不能判断（§1.5 创新点 1）
-python -m inkjet_ml.heads.samba --leave-nozzle-out
+uv run python -m inkjet_ml.heads.samba --leave-nozzle-out
 
 # 对照：不给模型孔号信息
-python -m inkjet_ml.heads.samba --no-nozzle-features
+uv run python -m inkjet_ml.heads.samba --no-nozzle-features
 ```
 
 ---
@@ -265,10 +263,10 @@ python -m inkjet_ml.heads.samba --no-nozzle-features
 ## 5. 换墨水：算 Z 数
 
 ```powershell
-python -m inkjet_ml.inkprops --table1                    # 论文 Table 1 自检（12 种墨水）
-python -m inkjet_ml.inkprops --rho 1071 --eta 3.45 --gamma 56.4 --d 40   # 正算 Z
+uv run python -m inkjet_ml.inkprops --table1                    # 论文 Table 1 自检（12 种墨水）
+uv run python -m inkjet_ml.inkprops --rho 1071 --eta 3.45 --gamma 56.4 --d 40   # 正算 Z
 # 反解喷孔直径（--solve 必须配 --z）
-python -m inkjet_ml.inkprops --rho 1071 --eta 3.45 --gamma 56.4 --z 14.25 --solve d
+uv run python -m inkjet_ml.inkprops --rho 1071 --eta 3.45 --gamma 56.4 --z 14.25 --solve d
 ```
 
 `--table1` 会自检实现并给出结论：
@@ -289,30 +287,30 @@ python -m inkjet_ml.inkprops --rho 1071 --eta 3.45 --gamma 56.4 --z 14.25 --solv
 
 ```powershell
 # ===== 设计扫描方案 =====
-python -m inkjet_ml.ada --dims                    # 这版机器能扫什么
-python -m inkjet_ml.ada --plan screen             # 粗筛方案
-python -m inkjet_ml.ada --config narrow           # 可照填的 recipe XML
-python -m inkjet_ml.ada --verify --head DMCSamba  # 交叉校验（应 19/19）
-python -m inkjet_ml.ada --rules                   # DropQCS 判据文件内容
+uv run python -m inkjet_ml.ada --dims                    # 这版机器能扫什么
+uv run python -m inkjet_ml.ada --plan screen             # 粗筛方案
+uv run python -m inkjet_ml.ada --config narrow           # 可照填的 recipe XML
+uv run python -m inkjet_ml.ada --verify --head DMCSamba  # 交叉校验（应 19/19）
+uv run python -m inkjet_ml.ada --rules                   # DropQCS 判据文件内容
 
 # ===== 读回结果 =====
-python -m inkjet_ml.ada_rank "<落盘根>"                          # 硬编码判据排序
-python -m inkjet_ml.ada_rank "<落盘根>" --rules "<RulesConfig>"   # 官方规则判
-python -m inkjet_ml.ada_rank "<落盘根>" --csv 排序表.csv          # 导出
+uv run python -m inkjet_ml.ada_rank "<落盘根>"                          # 硬编码判据排序
+uv run python -m inkjet_ml.ada_rank "<落盘根>" --rules "<RulesConfig>"   # 官方规则判
+uv run python -m inkjet_ml.ada_rank "<落盘根>" --csv 排序表.csv          # 导出
 
 # ===== 训练与推荐 =====
-python -m inkjet_ml.heads.samba --recommend --target-speed 3.5
-python -m inkjet_ml.heads.samba --recommend --data "<新落盘根>"   # 接入新数据
-python -m inkjet_ml.heads.samba --leave-nozzle-out                # 迁移性评估
-python -m inkjet_ml.heads.km512                                   # 管线自检
-python -m inkjet_ml.heads.km1024i                                 # 管线自检
+uv run python -m inkjet_ml.heads.samba --recommend --target-speed 3.5
+uv run python -m inkjet_ml.heads.samba --recommend --data "<新落盘根>"   # 接入新数据
+uv run python -m inkjet_ml.heads.samba --leave-nozzle-out                # 迁移性评估
+uv run python -m inkjet_ml.heads.km512                                   # 管线自检
+uv run python -m inkjet_ml.heads.km1024i                                 # 管线自检
 
 # ===== 墨水 =====
-python -m inkjet_ml.inkprops --table1
+uv run python -m inkjet_ml.inkprops --table1
 
 # ===== 自检 =====
-python -m unittest inkjet_ml.test_ncalc -v        # 规则求值器（16 项）
-python -m unittest inkjet_ml.test_data_roots -v   # 数据接入链路（12 项）
+uv run python -m unittest inkjet_ml.test_ncalc -v        # 规则求值器（16 项）
+uv run python -m unittest inkjet_ml.test_data_roots -v   # 数据接入链路（12 项）
 ```
 
 ---
