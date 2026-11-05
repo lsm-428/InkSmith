@@ -4,7 +4,8 @@
 > 平台：LP50 全自动喷墨打印系统（ADA 落滴自动分析 + DropQCS 落滴质检）。
 >
 > **本文档只讲"怎么操作"。** 结论与依据在 [`PROJECT_RECORD.md`](PROJECT_RECORD.md)；
-> 论文原文与官方手册在 [`docs/`](docs/)。
+> 论文原文与原始表格在 [`docs/evidence/`](docs/evidence/README.md)
+> （平台官方手册仅本机查阅，不入库）。
 >
 > 文中每条命令的输出都是**实跑截取**（2026-11-04，Windows + `.venv`）。
 > 环境准备：`python -m venv .venv` → `.venv\Scripts\pip install -r requirements.txt`。
@@ -75,12 +76,13 @@ python -m inkjet_ml.ada --dims
 > ⚠️ **别照抄默认区间**：`.Nozzle` 的默认值 `1:128` 对 Samba（物理 **12** 孔）是越界，
 > 对 KM512（512 孔）只是"只测前 128 个"。用 `--plan` 给出的方案，别用默认值。
 
-### 1.2 看扫描方案（4 档，按顺序推进）
+### 1.2 看扫描方案（5 档，按顺序推进）
 
 ```powershell
 python -m inkjet_ml.ada --plan screen      # 阶段1 粗筛：找可行波形域
 python -m inkjet_ml.ada --plan narrow      # 阶段2 围绕最优点局部加密
 python -m inkjet_ml.ada --plan window      # 阶段2b 压力/温度独立成维
+python -m inkjet_ml.ada --plan delay       # 阶段2c 成滴形貌延时序列（LEDDelay 0–220 µs）
 python -m inkjet_ml.ada --plan uniform     # 阶段3 全头重复性扫描
 ```
 
@@ -179,7 +181,7 @@ python -m inkjet_ml.ada_rank "C:\LP50\ScreenCaptures\2026-11-05_09.30.00_Measure
 
 ### 用官方 DropQCS 规则判（推荐）
 
-机台自带的 9 套预置规则（`Rules\Examples\*.RulesConfig.xml`）可直接用：
+机台自带的 **8 套示例规则 + `Default`**（共 9 个 `*.RulesConfig.xml`）可直接用：
 
 ```powershell
 python -m inkjet_ml.ada_rank "<落盘根>" --rules "D:\Oleton\Inkjet\LP50 V4730 4-2026 & Canon FAT\Rules\Examples\SingleDroplet.RulesConfig.xml"
@@ -312,8 +314,8 @@ python -m inkjet_ml.heads.km1024i                                 # 管线自检
 python -m inkjet_ml.inkprops --table1
 
 # ===== 自检 =====
-python -m unittest inkjet_ml.test_ncalc -v        # 规则求值器（15 项）
-python -m unittest inkjet_ml.test_data_roots -v   # 数据接入链路（11 项）
+python -m unittest inkjet_ml.test_ncalc -v        # 规则求值器（16 项）
+python -m unittest inkjet_ml.test_data_roots -v   # 数据接入链路（12 项）
 ```
 
 ---
@@ -323,11 +325,11 @@ python -m unittest inkjet_ml.test_data_roots -v   # 数据接入链路（11 项�
 **已跑通** ✅
 - 四个模块都能独立运行并产出可用输出；
 - KM1024i 用 V4730 真实落盘数据（1024 孔）完整走通训练管线；
-- 官方 9 套 DropQCS 规则全部可离线执行；
-- 数据接入链路有 11 项回归测试锁住。
+- 8 套示例规则 + `Default` 全部可离线执行；
+- 规则求值器 16 项 + 数据接入链路 12 项 = **28 项回归测试**锁住。
 
 **还没跑通** ⬜
-- **实机扫描一次都还没跑**——四阶段 DOE 方案已就位，但新数据一个点都没采
+- **实机扫描一次都还没跑**——DOE 方案已就位，但新数据一个点都没采
   （`PROJECT_RECORD.md` §9 标着「⬜ 仍待实机执行」）；
 - **Z 数进不了特征**——生产墨水的 ρ/η/γ 未实测，跨墨水泛化暂时做不了；
 - **现有数据太薄**——9 个会话只覆盖 4 个波形点（40V/2.2、40V/1.9、34V/2.2、38V/2.2），
@@ -355,8 +357,9 @@ python -m unittest inkjet_ml.test_data_roots -v   # 数据接入链路（11 项�
 | 机台扫完读不到数据 | 落盘根选错层级 | 要指到**含组合子目录**的那一层 |
 | 训练跑很久不结束 | 组数太少退化成留一法 | 已修（见 `test_data_roots.py::TestCVFolds`） |
 
-**项目状态**：`PROJECT_RECORD.md` 是结论与依据的单一事实来源；
-`docs/evidence/` 是论文与原始表格；`docs/` 是 ADA / DropQCS 官方手册。
+**文档分工**：[`README.md`](README.md) 项目概览 · [`QUICKSTART.md`](QUICKSTART.md) 操作手册 ·
+[`PROJECT_RECORD.md`](PROJECT_RECORD.md) 结论与依据（单一事实来源） ·
+[`docs/evidence/`](docs/evidence/README.md) 论文与原始表格。
 
 ---
 
@@ -367,3 +370,6 @@ python -m unittest inkjet_ml.test_data_roots -v   # 数据接入链路（11 项�
 - 训练产物在 `results\<head>\`（`report.md` / `metrics.json` / `recommended.json`），
   该目录被 `.gitignore` 排除，重跑不产生版本库改动。
 - `explore\*.json` 是 ADA 资产解析产物，同样被 `.gitignore` 排除，可随时重新解析。
+- `.workbuddy/`（AI 助手记忆与工作日志）也是本地状态，不入库。
+- 实测数据 `share/`、平台官方手册 `docs/DropQCS/` 与 `docs/Advanced_Drop_Analysis/`
+  同样只在本机保留，不入库。
