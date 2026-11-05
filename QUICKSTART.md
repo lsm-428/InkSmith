@@ -12,26 +12,21 @@
 
 ---
 
-## 0. 这个文件夹是什么（先读这段）
+## 0. 这个仓库里有什么
 
-本机的工作目录 `D:\Gitee\LP50` **已绑定到 GitHub 仓库 `lsm-428/InkSmith`**。
-**git 仓库根就是本目录 `ML/`**——上层 `LP50/` 只是工作区容器，不参与版本管理：
+本目录就是 git 仓库根，项目代码与文档全在这里。
 
-| | 位置 | 内容 | 版本管理 |
-|---|---|---|---|
-| **代码与文档** | `ML/`（= 仓库根） | 全部源码、`PROJECT_RECORD.md`、本手册、论文佐证索引 | ✅ 入库（`origin/main`） |
-| **机台资产** | `LP50/Recipes/`（434 MB）、`LP50/AutoADA/`（28 MB） | 机台配方、厂商集成包、实测数据副本 | ❌ 不入库（在仓库根之外） |
-| **实测数据** | `ML/share/`（9 会话 / 108 孔） | DMC Samba 落滴图像 + 读数 | ❌ 不入库（`.gitignore`） |
+| 位置 | 内容 | 入库 |
+|---|---|---|
+| `inkjet_ml/`、`*.md`、`explore/labels.csv` | 源码与文档 | ✅ |
+| `share/` | DMC Samba 实测数据（9 会话 / 108 孔） | ❌ `.gitignore` |
+| `results/`、`.venv/`、`.workbuddy/` | 训练产物 / 环境 / 本地状态 | ❌ `.gitignore` |
 
-也就是说：**代码在 GitHub，机台的东西只在本机。** 换机或重新 clone 时，
-`Recipes/` 与 `share/` 需要另行拷贝（或用 `--data <落盘根>` 直接指向别的机器的落盘目录）。
-
-> 原 `lsm-428/LP50` 仓库已删除（GitHub 404）。本项目现在的正式远程是
-> **`lsm-428/InkSmith`**（2026-11-04 由另一项目改造而来，本目录是全部内容来源）。
+机台新扫的数据不在此目录，用 `--data <落盘根>` 接进训练（见 §4）。
 
 ---
 
-## 0. 一分钟看懂全流程
+## 0.1 一分钟看懂全流程
 
 ```
    ① 生成扫描方案          ② 机台执行 ADA          ③ 读回结果排序        ④ 训练并反向推荐
@@ -150,7 +145,7 @@ python -m inkjet_ml.ada --verify --head DMCSamba
 （`P0V24` = Pulse0 电压 24V、`P0W2.2` = 宽度 2.2µs、`noz1` = 1 号孔）：
 
 ```
-C:\LP50\ScreenCaptures\2026-11-05_09.30.00_Measurement\
+<落盘根>\
     P0V40\P0W2.2\P0T4.5\
         Measurement.xml      ← 该组合的真实设定值
         Results.csv          ← 逐孔读数
@@ -163,7 +158,7 @@ C:\LP50\ScreenCaptures\2026-11-05_09.30.00_Measurement\
 ## 3. 第 ③ 步：读回结果并排序
 
 ```powershell
-python -m inkjet_ml.ada_rank "C:\LP50\ScreenCaptures\2026-11-05_09.30.00_Measurement"
+python -m inkjet_ml.ada_rank "<落盘根>"
 ```
 
 输出（真实跑，share 数据）：
@@ -241,11 +236,11 @@ python -m inkjet_ml.heads.samba --recommend --target-speed 3.5
 ```powershell
 # 默认：既有数据 + 新扫数据 合并训练
 python -m inkjet_ml.heads.samba --recommend --target-speed 3.5 `
-    --data "C:\LP50\ScreenCaptures\2026-11-05_09.30.00_Measurement"
+    --data "<落盘根>"
 
 # 只用新扫的数据（丢弃默认源）
 python -m inkjet_ml.heads.samba --recommend --target-speed 3.5 `
-    --data "C:\LP50\ScreenCaptures\2026-11-05_09.30.00_Measurement" --replace-data
+    --data "<落盘根>" --replace-data
 
 # 多个根可重复给 --data
 python -m inkjet_ml.heads.samba --data "<根A>" --data "<根B>"
