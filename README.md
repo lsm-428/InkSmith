@@ -105,10 +105,7 @@ uv run python -m unittest inkjet_ml.test_data_roots   # 数据接入链路（12 
 
 ## 许可
 
-[GNU Affero General Public License v3.0](LICENSE)（SPDX: `AGPL-3.0`）— Copyright (c) 2026 lsm-428
+[AGPL-3.0](LICENSE) — Copyright (c) 2026 lsm-428
 
-> AGPL 是强 copyleft 许可：分发衍生作品须以同许可证提供源码；
-> 若修改后**通过网络向用户提供服务**，还须按第 13 条向这些用户提供对应源码。
+> 修改后经网络提供服务，须按第 13 条提供对应源码。
 
-`docs/evidence/` 下的第三方论文（PDF）与原始表格（.ods）仅供本地查阅，未入库；
-本项目自产的论文分享 PPT 已入库。
