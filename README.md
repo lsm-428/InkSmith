@@ -31,7 +31,6 @@
 ## 快速开始
 
 ```bash
-cd ML
 python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
 
 .venv/Scripts/python.exe -m inkjet_ml.ada --verify            # 配置自检（19 项）
